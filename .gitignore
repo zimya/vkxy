@@ -5,3 +5,8 @@
 /run/
 /out/
 /logs/
+.DS_Store
+.dbg/
+.jdk/
+/MinecraftSrc/
+/bin/
