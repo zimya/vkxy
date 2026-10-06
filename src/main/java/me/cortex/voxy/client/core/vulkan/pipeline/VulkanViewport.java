@@ -33,15 +33,15 @@ public class VulkanViewport {
         this.cameraZ = camZ;
         this.frameId++;
 
-        int secX = (int) Math.floor(camX) >> 4;
-        int secY = (int) Math.floor(camY) >> 4;
-        int secZ = (int) Math.floor(camZ) >> 4;
+        int secX = (int) Math.floor(camX) >> 5;
+        int secY = (int) Math.floor(camY) >> 5;
+        int secZ = (int) Math.floor(camZ) >> 5;
         this.section.set(secX, secY, secZ);
 
         this.innerTranslation.set(
-                camX - (secX << 4),
-                camY - (secY << 4),
-                camZ - (secZ << 4)
+                camX - (secX << 5),
+                camY - (secY << 5),
+                camZ - (secZ << 5)
         );
 
         this.modelView.set(view);
@@ -73,20 +73,23 @@ public class VulkanViewport {
     public static Matrix4f computeVulkanProjection(Matrix4fc baseProjection) {
         var rawMCProj = Minecraft.getInstance().gameRenderer.gameRenderState().levelRenderState.cameraRenderState.projectionMatrix;
         var extraProjection = rawMCProj.invert(new Matrix4f()).mul(baseProjection);
+        var properties = me.cortex.voxy.client.core.RenderProperties.getRenderProperties();
 
         float near = 16f;
         float far = 16f * 3000f; // 48000 blocks
 
-        // Reverse-Z: flip near and far
-        float tmp = near;
-        near = far;
-        far = tmp;
+        // Flip near and far on reverse depth
+        if (properties.isReverseZ()) {
+            float tmp = near;
+            near = far;
+            far = tmp;
+        }
 
-        // Zero to one depth (Vulkan clip space)
+        // Clip space depth mapping
         return extraProjection.mulLocal(
                 new Matrix4f(rawMCProj)
-                        .m22(far / (near - far))
-                        .m32(far * near / (near - far))
+                        .m22((properties.isZero2One() ? far : (far + near)) / (near - far))
+                        .m32((properties.isZero2One() ? far : (far + far)) * near / (near - far))
         );
     }
 

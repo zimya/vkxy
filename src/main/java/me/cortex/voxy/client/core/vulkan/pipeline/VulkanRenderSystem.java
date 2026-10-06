@@ -110,6 +110,11 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
         long quadStart = this.nextQuadOffset;
         this.nextQuadOffset += quadCount;
 
+        if (this.nextSectionId % 50 == 1) {
+            Logger.info(String.format("Vulkan meshed %d sections, %d quads (latest sec %s, quads %d)",
+                    this.nextSectionId - 1, this.nextQuadOffset, me.cortex.voxy.common.world.WorldEngine.pprintPos(built.position), quadCount));
+        }
+
         // Copy geometry quads to geometryBuffer
         long dstAddr = this.geometryData.getGeometryBuffer().map() + quadStart * 8L;
         UnsafeUtil.memcpy(built.geometryBuffer.address, dstAddr, built.geometryBuffer.size);
@@ -118,15 +123,11 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
         long metaAddr = this.geometryData.getMetadataBuffer().map() + (long) secId * 32L;
 
         // uvec4 a:
-        // x: pos.x, y: pos.y, z: aabb, w: quadStart
-        int posX = (int) (built.position >> 42);
-        int posY = (int) ((built.position >> 22) & 0xFFFFF);
-        int posZ = (int) (built.position & 0x3FFFFF);
-
-        MemoryUtil.memPutInt(metaAddr, posX);
-        MemoryUtil.memPutInt(metaAddr + 4, posY);
+        // x: posA (position >> 32), y: posB (position), z: aabb, w: quadStart
+        MemoryUtil.memPutInt(metaAddr, (int) (built.position >> 32));
+        MemoryUtil.memPutInt(metaAddr + 4, (int) built.position);
         MemoryUtil.memPutInt(metaAddr + 8, built.aabb);
-        MemoryUtil.memPutInt(metaAddr + 12, (int) quadStart);
+        MemoryUtil.memPutInt(metaAddr + 12, (int) quadStart + (built.offsets != null ? built.offsets[0] : 0));
 
         // uvec4 b: face counts
         int[] offsets = built.offsets;
@@ -172,8 +173,7 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
         // Update Viewport
         var mcProj = client.gameRenderer.gameRenderState().levelRenderState.cameraRenderState.projectionMatrix;
         Matrix4f voxyProj = VulkanViewport.computeVulkanProjection(mcProj);
-        Matrix4f viewMatrix = new Matrix4f();
-        camera.rotation().get(viewMatrix);
+        Matrix4f viewMatrix = camera.getViewRotationMatrix(new Matrix4f());
 
         this.sectionRenderer.getViewport().update(voxyProj, viewMatrix, camX, camY, camZ);
 
