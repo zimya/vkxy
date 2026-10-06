@@ -20,7 +20,13 @@ import java.util.function.Function;
 public class VoxyClient implements ClientModInitializer {
     private static final HashSet<String> FREX = new HashSet<>();
     private static FileLock EXCLUSIVE_LOCK;
-    public static void initVoxyClient() {
+    public static void initVoxyClient(com.mojang.renderpearl.api.device.GpuDevice device) {
+        //26.3 defaults to a Vulkan RenderPearl backend, voxy's renderer is still pure OpenGL (and lwjgl GL
+        //capabilities do not exist without a GL context), so skip all GL setup unless the GL backend is active.
+        if (!device.getClass().getName().contains(".opengl.")) {
+            Logger.warn("Voxy: non-OpenGL render backend (" + device.getClass().getName() + "), voxy rendering is disabled");
+            return;
+        }
         Capabilities.init();//Ensure clinit is called
 
         if (Capabilities.INSTANCE.hasBrokenDepthSampler) {
@@ -65,6 +71,7 @@ public class VoxyClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         DebugEntries.init();
+        VoxyTestWorld.init();
 
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
             if (VoxyCommon.isAvailable()) {

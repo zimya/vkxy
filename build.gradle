@@ -175,8 +175,29 @@ jar {
     dependsOn(dummySodiumProviderGenerator)
 }
 
+//GL-only mixins that don't compile/apply on 26.3 (RenderPearl); kept in the tree until the Vulkan port replaces them
+sourceSets.main.java.exclude(
+        "me/cortex/voxy/client/mixin/iris/MixinLevelRenderer.java",
+        "me/cortex/voxy/client/mixin/minecraft/util/MixinGlDebug.java",
+        "me/cortex/voxy/client/mixin/sodium/MixinDefaultChunkRenderer.java")
+
 loom {
     accessWidenerPath = file("src/main/resources/voxy.accesswidener")
+
+    runs {
+        // Force the Vulkan RenderPearl backend (ignores the in-game preferredGraphicsBackend option)
+        client {
+            programArgs "--graphicsBackend", "vulkan"
+        }
+        // ./gradlew runTestWorld : launches 26.3, auto joins the voxy1 world, spins the camera and screenshots
+        testWorld {
+            client()
+            ideConfigGenerated(false)
+            runDir "run"
+            vmArg "-Dvoxy.testWorld=true"
+            programArgs "--graphicsBackend", "vulkan", "--quickPlaySingleplayer", "voxy1"
+        }
+    }
 }
 
 def runtimeOnlyMsk = {arg->}
@@ -248,9 +269,9 @@ dependencies {
     {
         var (_, mr, ver, _2) = findSodiumVersion()
         if (mr) {
-            implementation "maven.modrinth:sodium:${ver}"
+            compileOnly "maven.modrinth:sodium:${ver}"
         } else {
-            implementation "net.caffeinemc:sodium-fabric:${ver}"
+            compileOnly "net.caffeinemc:sodium-fabric:${ver}"
         }
     }
 

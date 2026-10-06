@@ -4,10 +4,9 @@ import com.sun.jna.Pointer;
 import com.sun.jna.platform.win32.COM.COMInvoker;
 import com.sun.jna.platform.win32.*;
 import com.sun.jna.ptr.PointerByReference;
-import org.lwjgl.glfw.GLFWNativeWin32;
 
 public class WindowsTaskbar extends COMInvoker implements Taskbar.ITaskbar {
-    private final WinDef.HWND hwnd;
+    private WinDef.HWND hwnd;
     WindowsTaskbar(long windowId) {
         var itaskbar3res = new PointerByReference();
 
@@ -20,7 +19,9 @@ public class WindowsTaskbar extends COMInvoker implements Taskbar.ITaskbar {
         }
 
         this.setPointer(itaskbar3res.getValue());
-        this.hwnd = new WinDef.HWND(new Pointer(GLFWNativeWin32.glfwGetWin32Window(windowId)));
+        //TODO: 26.3 uses SDL windows, GLFW win32 handle lookup removed
+        if (true) throw new UnsupportedOperationException("Windows taskbar unsupported on 26.3 (SDL)");
+        this.hwnd = new WinDef.HWND(new Pointer(0));
 
         this.invokeNative(3); // HrInit
     }

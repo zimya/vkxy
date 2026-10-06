@@ -2,8 +2,8 @@ package me.cortex.voxy.client.mixin.sodium;
 
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
-import com.mojang.blaze3d.opengl.GlTextureView;
-import com.mojang.blaze3d.textures.GpuSampler;
+import com.mojang.renderpearl.backend.opengl.GlTextureView;
+import com.mojang.renderpearl.api.textures.GpuSampler;
 import me.cortex.voxy.client.VoxyClient;
 import me.cortex.voxy.client.core.IVoxyRenderSystemHolder;
 import me.cortex.voxy.client.core.rendering.Viewport;

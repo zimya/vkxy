@@ -14,7 +14,7 @@ voxy是一个Minecraft远视距模组。
 
 Voxy 的 compute 和 GPU-driven culling增加自己的后端接口。Vulkan 实现需要获得底层 Vulkan command buffer、buffer 和 pipeline 能力；不能只依赖 RenderPearl 的公开 API。
 
-你不需要像原版一样硬依赖sodium，目前已经移除了 Iris、Nvidium、Sodium 的 Gradle/Fabric 依赖，同时移除了 Lithium。
+你不需要像原版一样硬依赖sodium。
 
 ---
 
@@ -22,7 +22,7 @@ Voxy 的 compute 和 GPU-driven culling增加自己的后端接口。Vulkan 实�
 
 ./gradlew runTestWorld
 
-每次修改完都要用这个命令验证，运行20s无问题、无崩溃、无报错才算验证完毕。
+每次修改完都要用这个命令验证，运行20s无问题、无崩溃、无报错才算验证完毕。这个命令会自动旋转视角并截图，截图保存在 ./run/screenshots，里面的世界图片需要符合你的预期。当前运行的log永远在./run/logs/latest.log中查看。
 
 ---
 

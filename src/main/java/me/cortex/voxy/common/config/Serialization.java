@@ -151,6 +151,9 @@ public class Serialization {
                         break;
                     }
                 }
+            } catch (NoClassDefFoundError e) {
+                //Optional deps (e.g. sodium config api) are not present, such classes cannot be config types
+                Logger.info("Skipping config class with missing optional dependency: " + e.getMessage());
             } catch (Throwable e) {
                 Logger.error("Error while setting up config serialization", e);
             }
