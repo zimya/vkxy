@@ -70,16 +70,32 @@ public class SoftwareModelTextureBakery {
         //Just do it ourselves as doing it with b3d has some issues, (doing it ourselves is also just much much much shorter)
         var texture = new int[width * height];
 
-        glFlush();
-        glFinish();
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-        glPixelStorei(GL_PACK_ROW_LENGTH, width);
-        glPixelStorei(GL_PACK_IMAGE_HEIGHT, 0);
-        glPixelStorei(GL_PACK_SKIP_ROWS, 0);
-        glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
-        glPixelStorei(GL_PACK_ALIGNMENT, 4);
-        glGetTextureImage(((GlTexture) tex).glId(), 0, GL_RGBA, GL_UNSIGNED_BYTE, texture);
+        if (me.cortex.voxy.client.core.vulkan.bridge.VulkanBridge.isAvailable()) {
+            var device = me.cortex.voxy.client.core.vulkan.bridge.VulkanBridge.getInstance().getFrontendDevice();
+            var readbackBuffer = device.createBuffer(() -> "atlas readback",
+                    com.mojang.renderpearl.api.buffers.GpuBuffer.USAGE_COPY_DST | com.mojang.renderpearl.api.buffers.GpuBuffer.USAGE_MAP_READ,
+                    (long) width * height * 4);
+            var encoder = device.createCommandEncoder();
+            encoder.copyTextureToBuffer(tex, readbackBuffer, 0, () -> {}, targetMipLevel, 0, 0, width, height);
+            encoder.submit();
+            var bridge = me.cortex.voxy.client.core.vulkan.bridge.VulkanBridge.getInstance();
+            bridge.waitIdle();
+            try (var mapped = readbackBuffer.map(true, false)) {
+                mapped.data().asIntBuffer().get(texture);
+            }
+            readbackBuffer.close();
+        } else {
+            glFlush();
+            glFinish();
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+            glPixelStorei(GL_PACK_ROW_LENGTH, width);
+            glPixelStorei(GL_PACK_IMAGE_HEIGHT, 0);
+            glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+            glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+            glPixelStorei(GL_PACK_ALIGNMENT, 4);
+            glGetTextureImage(((GlTexture) tex).glId(), 0, GL_RGBA, GL_UNSIGNED_BYTE, texture);
+        }
         this.rasterizer.setSamplerTexture(texture, width, height);
     }
 

@@ -38,7 +38,9 @@
     "vulkan.AccessorFrontendGpuDevice",
     "vulkan.AccessorFrontendRenderPass",
     "vulkan.AccessorVulkanRenderPass",
-    "vulkan.AccessorVulkanCommandEncoder"
+    "vulkan.AccessorVulkanCommandEncoder",
+    "vulkan.AccessorVulkanGpuTextureView",
+    "vulkan.AccessorVulkanGpuSampler"
   ],
   "injectors": {
     "defaultRequire": 1

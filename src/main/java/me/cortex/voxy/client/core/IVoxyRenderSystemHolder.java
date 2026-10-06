@@ -4,13 +4,13 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.world.level.Level;
 
 public interface IVoxyRenderSystemHolder {
-    VoxyRenderSystem voxy$getRenderSystem();
+    IVoxyRenderSystem voxy$getRenderSystem();
     void voxy$shutdownRenderer();
     void voxy$createRenderer();
     //void voxy$reloadRenderer();
     void voxy$setWorld(Level level);
 
-    static VoxyRenderSystem getNullable() {
+    static IVoxyRenderSystem getNullable() {
         var lr = getNullableHolder();
         if (lr == null) return null;
         return lr.voxy$getRenderSystem();

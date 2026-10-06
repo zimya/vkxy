@@ -8,6 +8,7 @@ import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.gl.GlTexture;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
+import me.cortex.voxy.client.core.model.ModelStore;
 import me.cortex.voxy.client.core.rendering.RenderDistanceTracker;
 import me.cortex.voxy.client.core.rendering.Viewport;
 import me.cortex.voxy.client.core.rendering.ViewportSelector;
@@ -53,7 +54,7 @@ import static org.lwjgl.opengl.GL33.glBindSampler;
 import static org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER;
 import static org.lwjgl.opengl.GL43C.GL_SHADER_STORAGE_BUFFER_BINDING;
 
-public class VoxyRenderSystem {
+public class VoxyRenderSystem implements IVoxyRenderSystem {
     private final WorldEngine worldIn;
 
     private final ModelBakerySubsystem modelService;
@@ -144,7 +145,7 @@ public class VoxyRenderSystem {
             this.traversal.lateStageCompile(this.pipeline);
 
 
-            var sectionRenderer = backendFactory.create(this.pipeline, this.modelService.getStore(), this.geometryData);
+            var sectionRenderer = backendFactory.create(this.pipeline, (ModelStore) this.modelService.getStore(), this.geometryData);
             this.pipeline.setSectionRenderer(sectionRenderer);
             this.viewportSelector = new ViewportSelector<>(sectionRenderer::createViewport);
 

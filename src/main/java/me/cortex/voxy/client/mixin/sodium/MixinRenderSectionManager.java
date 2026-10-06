@@ -2,6 +2,7 @@ package me.cortex.voxy.client.mixin.sodium;
 
 import me.cortex.voxy.client.ICheekyClientChunkCache;
 import me.cortex.voxy.client.config.VoxyConfig;
+import me.cortex.voxy.client.core.IVoxyRenderSystem;
 import me.cortex.voxy.client.core.IVoxyRenderSystemHolder;
 import me.cortex.voxy.client.core.VoxyRenderSystem;
 import me.cortex.voxy.client.core.util.IrisUtil;
@@ -43,16 +44,16 @@ public class MixinRenderSectionManager {
     @Inject(method = "renderOutOfGraph", at = @At("HEAD"))
     private void voxy$injectReset1(Viewport viewport, FogParameters fogParameters, CallbackInfo ci) {
         var vrs = IVoxyRenderSystemHolder.getNullable();
-        if (vrs != null && !IrisUtil.irisShadowActive() && vrs.visbleSectionStream != null) {
-            vrs.visbleSectionStream.reset();
+        if (vrs instanceof VoxyRenderSystem glSys && !IrisUtil.irisShadowActive() && glSys.visbleSectionStream != null) {
+            glSys.visbleSectionStream.reset();
         }
     }
 
     @Inject(method = "readRenderListFromTree", at = @At(value = "INVOKE", target = "Lnet/caffeinemc/mods/sodium/client/render/chunk/lists/VisibleChunkCollector;<init>(Lnet/caffeinemc/mods/sodium/client/render/chunk/region/RenderRegionManager;I)V"))
     private void voxy$injectReset2(Viewport viewport, FogParameters fogParameters, CallbackInfo ci) {
         var vrs = IVoxyRenderSystemHolder.getNullable();
-        if (vrs != null && !IrisUtil.irisShadowActive() && vrs.visbleSectionStream != null) {
-            vrs.visbleSectionStream.reset();
+        if (vrs instanceof VoxyRenderSystem glSys && !IrisUtil.irisShadowActive() && glSys.visbleSectionStream != null) {
+            glSys.visbleSectionStream.reset();
         }
     }
 
@@ -94,7 +95,7 @@ public class MixinRenderSectionManager {
     private int voxy$updateOnUpload(RenderSection instance, BuiltSectionInfo info) {
         boolean isInvisible = instance.isInvisible();
         int changes = instance.setInfo(info);
-        VoxyRenderSystem vrs = null;
+        IVoxyRenderSystem vrs = null;
         if (isInvisible == instance.isInvisible() || changes == 0 || (vrs = IVoxyRenderSystemHolder.getNullable()) == null) {
             return changes;
         }

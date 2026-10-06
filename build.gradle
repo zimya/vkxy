@@ -403,10 +403,16 @@ dependencies {
     include(implementation "org.lwjgl:lwjgl-zstd:unsafe")
     runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-windows"
     runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-linux"
+    runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-macos"
+    runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-macos-arm64"
     include(runtimeOnly "org.lwjgl:lwjgl-lmdb:$lwjglVersion:natives-windows")
     include(runtimeOnly "org.lwjgl:lwjgl-zstd:$lwjglVersion:natives-windows")
     include(runtimeOnly "org.lwjgl:lwjgl-lmdb:$lwjglVersion:natives-linux")
     include(runtimeOnly "org.lwjgl:lwjgl-zstd:$lwjglVersion:natives-linux")
+    include(runtimeOnly "org.lwjgl:lwjgl-lmdb:$lwjglVersion:natives-macos")
+    include(runtimeOnly "org.lwjgl:lwjgl-zstd:$lwjglVersion:natives-macos")
+    include(runtimeOnly "org.lwjgl:lwjgl-lmdb:$lwjglVersion:natives-macos-arm64")
+    include(runtimeOnly "org.lwjgl:lwjgl-zstd:$lwjglVersion:natives-macos-arm64")
     if (INCLUDE_OTHER_ARCHS) {
         runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-linux-arm64"
         include(runtimeOnly "org.lwjgl:lwjgl-lmdb:$lwjglVersion:natives-linux-arm64")
@@ -434,6 +440,18 @@ dependencies {
 jmh {
     zip64 = true
     //profilers = ["xperfasm"]
+}
+
+test {
+    filter {
+        includeTestsMatching "*Test"
+        setFailOnNoMatchingTests(false)
+    }
+}
+
+task runShaderTest(type: JavaExec) {
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'me.cortex.voxy.VulkanShaderCompileTest'
 }
 
 /*

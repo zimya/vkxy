@@ -24,6 +24,7 @@ public class VoxyClient implements ClientModInitializer {
         if (me.cortex.voxy.client.core.vulkan.bridge.VulkanBridge.isVulkanDevice(device)) {
             if (me.cortex.voxy.client.core.vulkan.bridge.VulkanBridge.initialize(device)) {
                 Logger.info("Voxy: Initialized Vulkan backend via VulkanBridge");
+                VoxyCommon.setInstanceFactory(VoxyClientInstance::new);
                 return;
             }
         }

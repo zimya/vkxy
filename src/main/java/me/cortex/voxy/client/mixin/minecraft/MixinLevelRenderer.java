@@ -1,15 +1,23 @@
 package me.cortex.voxy.client.mixin.minecraft;
 
+import com.mojang.renderpearl.api.buffers.GpuBufferSlice;
+import com.mojang.renderpearl.api.commands.RenderPass;
 import me.cortex.voxy.client.VoxyClientInstance;
 import me.cortex.voxy.client.config.VoxyConfig;
+import me.cortex.voxy.client.core.IVoxyRenderSystem;
 import me.cortex.voxy.client.core.IVoxyRenderSystemHolder;
 import me.cortex.voxy.client.core.VoxyRenderSystem;
 import me.cortex.voxy.client.core.util.IrisUtil;
+import me.cortex.voxy.client.core.vulkan.bridge.VulkanBridge;
+import me.cortex.voxy.client.core.vulkan.pipeline.VulkanRenderSystem;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import me.cortex.voxy.commonImpl.WorldIdentifier;
 import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.client.renderer.chunk.ChunkSectionsToRender;
+import net.minecraft.client.renderer.feature.FeatureRenderDispatcher;
+import com.mojang.blaze3d.framegraph.FrameGraphBuilder;
 import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.Nullable;
 import org.spongepowered.asm.mixin.Mixin;
@@ -23,10 +31,10 @@ import java.util.Objects;
 @Mixin(LevelRenderer.class)
 public abstract class MixinLevelRenderer implements IVoxyRenderSystemHolder {
     @Unique @Nullable private WorldIdentifier identifier;
-    @Unique private @Nullable VoxyRenderSystem renderer;
+    @Unique private @Nullable IVoxyRenderSystem renderer;
 
     @Override
-    public VoxyRenderSystem voxy$getRenderSystem() {
+    public IVoxyRenderSystem voxy$getRenderSystem() {
         return this.renderer;
     }
 
@@ -42,13 +50,6 @@ public abstract class MixinLevelRenderer implements IVoxyRenderSystemHolder {
             this.renderer = null;
         }
     }
-
-    /*
-    @Override
-    public void voxy$reloadRenderer() {
-        this.voxy$shutdownRenderer();
-        this.voxy$createRenderer();
-    }*/
 
     @Override
     public void voxy$setWorld(Level level) {
@@ -75,7 +76,6 @@ public abstract class MixinLevelRenderer implements IVoxyRenderSystemHolder {
         }
         var instance = (VoxyClientInstance)VoxyCommon.getInstance();
         if (instance == null) {
-            //This is now legal (e.g. when the instance is disabled)
             Logger.info("Not creating renderer due to null instance");
             return;
         }
@@ -90,9 +90,13 @@ public abstract class MixinLevelRenderer implements IVoxyRenderSystemHolder {
     @Unique
     private void voxy$createEngineDirect(WorldEngine world) {
         var instance = world.instanceIn;
-        if (instance == null) throw new IllegalStateException();//in theory this could be null if is like in a test suit or something
+        if (instance == null) throw new IllegalStateException();
         try {
-            this.renderer = new VoxyRenderSystem(world, instance.getServiceManager());
+            if (VulkanBridge.isAvailable()) {
+                this.renderer = new VulkanRenderSystem(world, instance.getServiceManager());
+            } else {
+                this.renderer = new VoxyRenderSystem(world, instance.getServiceManager());
+            }
         } catch (RuntimeException e) {
             if (IrisUtil.irisShaderPackEnabled()) {
                 IrisUtil.disableIrisShaders();
@@ -101,5 +105,32 @@ public abstract class MixinLevelRenderer implements IVoxyRenderSystemHolder {
             }
         }
         instance.updateDedicatedThreads();
+    }
+
+    @Inject(method = "addMainPass", at = @At("HEAD"))
+    private void voxy$onAddMainPass(FrameGraphBuilder frame, FeatureRenderDispatcher.PreparedFrame featureFrame,
+                                    GpuBufferSlice terrainFog, ChunkSectionsToRender chunkSectionsToRender,
+                                    boolean consistentDepthRequired, CallbackInfo ci) {
+        if (this.renderer != null) {
+            this.renderer.onFrameStart();
+        }
+    }
+
+    @Inject(method = "executeSolid", at = @At("TAIL"))
+    private void voxy$onExecuteSolid(ChunkSectionsToRender chunkSectionsToRender,
+                                     FeatureRenderDispatcher.PreparedFrame featureFrame,
+                                     RenderPass renderPass, CallbackInfo ci) {
+        if (this.renderer != null) {
+            this.renderer.renderOpaque(renderPass);
+        }
+    }
+
+    @Inject(method = "executeClassicTransparency", at = @At("TAIL"))
+    private void voxy$onExecuteClassicTransparency(ChunkSectionsToRender chunkSectionsToRender,
+                                                   FeatureRenderDispatcher.PreparedFrame featureFrame,
+                                                   RenderPass renderPass, CallbackInfo ci) {
+        if (this.renderer != null) {
+            this.renderer.renderTranslucent(renderPass);
+        }
     }
 }

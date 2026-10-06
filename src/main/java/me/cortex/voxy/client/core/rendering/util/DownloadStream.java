@@ -185,5 +185,5 @@ public class DownloadStream {
 
 
     // Global download stream
-    public static final DownloadStream INSTANCE = new DownloadStream(1<<25);//32 mb download buffer
+    public static final DownloadStream INSTANCE = me.cortex.voxy.client.core.vulkan.bridge.VulkanBridge.isAvailable() ? null : new DownloadStream(1<<25);//32 mb download buffer
 }

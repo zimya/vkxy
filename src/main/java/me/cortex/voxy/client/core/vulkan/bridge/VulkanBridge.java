@@ -77,12 +77,20 @@ public final class VulkanBridge {
         return INSTANCE;
     }
 
+    public static VulkanBridge getInstance() {
+        return instance();
+    }
+
     public FrontendGpuDevice getFrontendDevice() {
         return this.frontendDevice;
     }
 
     public VulkanDevice getVulkanDevice() {
         return this.vulkanDevice;
+    }
+
+    public VkDevice getDevice() {
+        return getVkDevice();
     }
 
     public VkDevice getVkDevice() {
@@ -146,8 +154,21 @@ public final class VulkanBridge {
         throw new IllegalArgumentException("RenderPass is not a VulkanRenderPass: " + renderPass.getClass().getName());
     }
 
+    public VkCommandBuffer extractCommandBuffer(RenderPass renderPass) {
+        return getRenderPassCommandBuffer(renderPass);
+    }
+
     public VkCommandBuffer allocateTransientCommandBuffer() {
         return this.getCommandEncoder().allocateAndBeginTransientCommandBuffer();
+    }
+
+    public VkCommandBuffer beginTransientCommandBuffer() {
+        return allocateTransientCommandBuffer();
+    }
+
+    public void endAndSubmitTransientCommandBuffer(VkCommandBuffer cb) {
+        executeCommandBuffer(cb);
+        waitIdle();
     }
 
     public VkCommandBuffer getOrCreateActiveCommandBuffer() {
@@ -193,9 +214,16 @@ public final class VulkanBridge {
 
     public long getVkImageView(GpuTextureView view) {
         if (view instanceof VulkanGpuTextureView vtv) {
-            return vtv.vkImageView();
+            return ((me.cortex.voxy.client.mixin.vulkan.AccessorVulkanGpuTextureView) vtv).voxy$getVkImageView();
         }
         throw new IllegalArgumentException("TextureView is not a VulkanGpuTextureView: " + (view == null ? "null" : view.getClass().getName()));
+    }
+
+    public long getVkSampler(com.mojang.renderpearl.api.textures.GpuSampler sampler) {
+        if (sampler instanceof com.mojang.renderpearl.backend.vulkan.VulkanGpuSampler vs) {
+            return ((me.cortex.voxy.client.mixin.vulkan.AccessorVulkanGpuSampler) vs).voxy$getVkSampler();
+        }
+        throw new IllegalArgumentException("Sampler is not a VulkanGpuSampler: " + (sampler == null ? "null" : sampler.getClass().getName()));
     }
 
     public long getPipelineHandle(CompiledRenderPipeline pipeline, boolean withDepth) {
@@ -214,10 +242,6 @@ public final class VulkanBridge {
 
     public void queueForDestroy(Destroyable destroyable) {
         this.getCommandEncoder().queueForDestroy(destroyable);
-    }
-
-    public void queueForDestroy(Runnable cleanup) {
-        this.getCommandEncoder().queueForDestroy(cleanup::run);
     }
 
     public long getCurrentSubmitIndex() {

@@ -388,7 +388,27 @@ public class Mapper {
                 if (compound.getIntOr("id", -1) != id) {
                     throw new IllegalStateException("Encoded id != expected id");
                 }
-                var bsc = compound.getCompound("block_state").orElseThrow();
+                var bscOpt = compound.getCompound("block_state");
+                CompoundTag bsc;
+                if (bscOpt.isEmpty()) {
+                    var tag = compound.get("block_state");
+                    if (tag == null) {
+                        Logger.error("block_state missing in StateEntry id=" + id + ", keys=" + compound.keySet() + ", compound=" + compound);
+                        return new StateEntry(id, Blocks.AIR.defaultBlockState());
+                    }
+                    if (tag instanceof CompoundTag ct) {
+                        bsc = ct;
+                    } else {
+                        var state = BlockState.CODEC.parse(NbtOps.INSTANCE, tag);
+                        if (state.isSuccess()) {
+                            return new StateEntry(id, state.getOrThrow());
+                        }
+                        Logger.error("Could not parse non-compound block_state tag for id=" + id + ": " + tag);
+                        return new StateEntry(id, Blocks.AIR.defaultBlockState());
+                    }
+                } else {
+                    bsc = bscOpt.get();
+                }
                 var state = BlockState.CODEC.parse(NbtOps.INSTANCE, bsc);
                 if (state.isError()) {
                     Logger.info("Could not decode blockstate, attempting fixes, error: "+ state.error().get().message());

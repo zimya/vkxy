@@ -1,5 +1,6 @@
 package me.cortex.voxy.client;
 
+import me.cortex.voxy.client.core.IVoxyRenderSystem;
 import me.cortex.voxy.client.core.IVoxyRenderSystemHolder;
 import me.cortex.voxy.client.core.VoxyRenderSystem;
 import me.cortex.voxy.commonImpl.VoxyCommon;
@@ -25,7 +26,7 @@ public class VoxyDebugScreenEntry implements DebugScreenEntry {
             return;
         }
 
-        VoxyRenderSystem vrs = IVoxyRenderSystemHolder.getNullable();
+        IVoxyRenderSystem vrs = IVoxyRenderSystemHolder.getNullable();
 
         //lines.addLineToSection();
         List<String> instanceLines = new ArrayList<>();

@@ -29,8 +29,8 @@ public class MixinFallbackVisibleChunkCollector {
     @Redirect(method = "visit", at = @At(value = "INVOKE", target = "Lnet/caffeinemc/mods/sodium/client/render/chunk/storage/SectionStorage;getCurrent(III)Lnet/caffeinemc/mods/sodium/client/render/chunk/RenderSection;"), remap = false)
     private RenderSection voxy$injectVisibleSectionGather(SectionStorage instance, int x, int y, int z) {
         var section = instance.getCurrent(x,y,z);
-        VoxyRenderSystem vrs;
-        if (!IrisUtil.irisShadowActive() && (vrs = IVoxyRenderSystemHolder.getNullable()) != null && voxy$shouldUseForChunkBound(section, LocalSectionIndex.pack(x, y, z))) {
+        var sys = IVoxyRenderSystemHolder.getNullable();
+        if (!IrisUtil.irisShadowActive() && sys instanceof VoxyRenderSystem vrs && voxy$shouldUseForChunkBound(section, LocalSectionIndex.pack(x, y, z))) {
             if (vrs.visbleSectionStream != null)
                 vrs.visbleSectionStream.put(SectionPos.asLong(x,y,z));
         }

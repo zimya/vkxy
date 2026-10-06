@@ -23,7 +23,7 @@ import static org.lwjgl.opengl.GL44.GL_MAP_COHERENT_BIT;
 import static org.lwjgl.opengl.GL45C.glFlushMappedNamedBufferRange;
 
 public class UploadStream {
-    public static final int BASE_ALLOCATION_ALIGNEMENT = Math.max(Capabilities.INSTANCE.ssboBindingAlignment, 16);
+    public static final int BASE_ALLOCATION_ALIGNEMENT = me.cortex.voxy.client.core.vulkan.bridge.VulkanBridge.isAvailable() ? 256 : Math.max(Capabilities.INSTANCE.ssboBindingAlignment, 16);
 
     private final AllocationArena allocationArena = new AllocationArena();
     private final GlPersistentMappedBuffer uploadBuffer;
@@ -173,7 +173,7 @@ public class UploadStream {
 
     //A upload instance instead of passing one around by reference
     // MUST ONLY BE USED ON THE RENDER THREAD
-    public static final UploadStream INSTANCE = new UploadStream(1<<26);//64 mb upload buffer
+    public static final UploadStream INSTANCE = me.cortex.voxy.client.core.vulkan.bridge.VulkanBridge.isAvailable() ? null : new UploadStream(1<<26);//64 mb upload buffer
 
     public static long alignUp(long val, long alignment) {
         return ((val+alignment-1)/alignment)*alignment;

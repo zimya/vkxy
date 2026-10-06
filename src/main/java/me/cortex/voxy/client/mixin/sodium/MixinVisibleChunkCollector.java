@@ -29,8 +29,8 @@ public class MixinVisibleChunkCollector {
     @Redirect(method = "visit", at = @At(value = "INVOKE", target = "Lnet/caffeinemc/mods/sodium/client/render/chunk/region/RenderRegionManager;getForChunk(III)Lnet/caffeinemc/mods/sodium/client/render/chunk/region/RenderRegion;"), remap = false)
     private RenderRegion voxy$injectVisibleSectionGather(RenderRegionManager instance, int x, int y, int z) {
         var region = instance.getForChunk(x,y,z);
-        VoxyRenderSystem vrs;
-        if (!IrisUtil.irisShadowActive() && (vrs = IVoxyRenderSystemHolder.getNullable()) != null && vrs.visbleSectionStream != null && voxy$shouldUseForChunkBound(region, LocalSectionIndex.pack(x, y, z))) {
+        var sys = IVoxyRenderSystemHolder.getNullable();
+        if (!IrisUtil.irisShadowActive() && sys instanceof VoxyRenderSystem vrs && vrs.visbleSectionStream != null && voxy$shouldUseForChunkBound(region, LocalSectionIndex.pack(x, y, z))) {
             vrs.visbleSectionStream.put(SectionPos.asLong(x,y,z));
         }
         return region;

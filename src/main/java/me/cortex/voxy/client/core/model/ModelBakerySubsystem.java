@@ -13,16 +13,21 @@ public class ModelBakerySubsystem {
     //Redo to just make it request the block faces with the async texture download stream which
     // basicly solves all the render stutter due to the baking
 
-    private final ModelStore storage;
+    private final IModelStore storage;
     public final ModelFactory factory;
     private final Mapper mapper;
 
     private final Thread processingThread;
     private volatile boolean isRunning = true;
     private volatile Throwable processingThreadException;
+
     public ModelBakerySubsystem(Mapper mapper) {
+        this(mapper, new ModelStore());
+    }
+
+    public ModelBakerySubsystem(Mapper mapper, IModelStore storage) {
         this.mapper = mapper;
-        this.storage = new ModelStore();
+        this.storage = storage;
         this.factory = new ModelFactory(mapper, this.storage);
         this.processingThread = new Thread(()->{//TODO replace this with something good/integrate it into the async processor so that we just have less threads overall
             while (this.isRunning) {
@@ -90,7 +95,7 @@ public class ModelBakerySubsystem {
         debug.add(String.format("IF/MC: %03d, %04d", this.factory.getInflightCount(),  this.factory.getBakedCount()));//Model bake queue/in flight/model baked count
     }
 
-    public ModelStore getStore() {
+    public IModelStore getStore() {
         return this.storage;
     }
 
