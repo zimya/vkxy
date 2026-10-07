@@ -326,7 +326,7 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
         this.childChangesQueue.clear();
 
         this.worldIn.releaseRef();
-        this.bridge.destroy();
+        this.bridge.waitIdle();
         Logger.info("Vulkan render system shutdown complete");
     }
 }

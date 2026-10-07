@@ -14,7 +14,7 @@
 #define MODEL_BUFFER_BINDING 3
 #define MODEL_COLOUR_BUFFER_BINDING 4
 #define POSITION_SCRATCH_BINDING 5
-#define LIGHTING_SAMPLER_BINDING 1
+#define LIGHTING_SAMPLER_BINDING 7
 
 #ifdef USE_SINGLE_TRI
 #define USE_NV_BARRY
@@ -53,7 +53,7 @@ void main() {
 
     QuadData quad;
     uvec2 pos = positionBuffer[gl_BaseInstance];
-    setupQuad(quad, quadData[uint(gl_VertexID)>>2], pos, (gl_VertexID&3) == 1);
+    setupQuad(quad, quadData[uint(gl_VertexID)>>2], pos, true);
 
     uint cornerId = gl_VertexID&3;
     vec3 cornerPoint = getQuadCornerPoint(quad, cornerId);

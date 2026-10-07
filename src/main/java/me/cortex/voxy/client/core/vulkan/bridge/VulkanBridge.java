@@ -50,22 +50,27 @@ public final class VulkanBridge {
     private final VulkanDevice vulkanDevice;
     private long transientCommandPool;
 
+    private void ensureTransientCommandPool() {
+        if (this.transientCommandPool == 0) {
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                VkCommandPoolCreateInfo poolInfo = VkCommandPoolCreateInfo.calloc(stack)
+                        .sType(VK12.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO)
+                        .queueFamilyIndex(this.vulkanDevice.graphicsQueue().queueFamilyIndex())
+                        .flags(VK12.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
+                LongBuffer pPool = stack.callocLong(1);
+                int res = VK12.vkCreateCommandPool(this.vulkanDevice.vkDevice(), poolInfo, null, pPool);
+                if (res != VK12.VK_SUCCESS) {
+                    throw new RuntimeException("Failed to create transient VkCommandPool: " + res);
+                }
+                this.transientCommandPool = pPool.get(0);
+            }
+        }
+    }
+
     private VulkanBridge(FrontendGpuDevice frontendDevice, VulkanDevice vulkanDevice) {
         this.frontendDevice = Objects.requireNonNull(frontendDevice, "frontendDevice");
         this.vulkanDevice = Objects.requireNonNull(vulkanDevice, "vulkanDevice");
-
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkCommandPoolCreateInfo poolInfo = VkCommandPoolCreateInfo.calloc(stack)
-                    .sType(VK12.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO)
-                    .queueFamilyIndex(this.vulkanDevice.graphicsQueue().queueFamilyIndex())
-                    .flags(VK12.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
-            LongBuffer pPool = stack.callocLong(1);
-            int res = VK12.vkCreateCommandPool(this.vulkanDevice.vkDevice(), poolInfo, null, pPool);
-            if (res != VK12.VK_SUCCESS) {
-                throw new RuntimeException("Failed to create transient VkCommandPool: " + res);
-            }
-            this.transientCommandPool = pPool.get(0);
-        }
+        ensureTransientCommandPool();
     }
 
     public static boolean isVulkanDevice(GpuDevice device) {
@@ -184,6 +189,7 @@ public final class VulkanBridge {
     }
 
     public VkCommandBuffer beginTransientCommandBuffer() {
+        ensureTransientCommandPool();
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkCommandBufferAllocateInfo allocInfo = VkCommandBufferAllocateInfo.calloc(stack)
                     .sType(VK12.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO)
