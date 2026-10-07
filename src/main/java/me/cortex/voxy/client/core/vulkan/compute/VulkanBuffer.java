@@ -77,9 +77,12 @@ public class VulkanBuffer implements AutoCloseable {
         int fullUsage = usage | VK12.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
                 | VK12.VK_BUFFER_USAGE_TRANSFER_SRC_BIT
                 | VK12.VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        // requiredFlags: 2 = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT
-        // preferredFlags: 8 = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-        return new VulkanBuffer(size, fullUsage, 8, 2, 8);
+        int required = VK12.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK12.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        return new VulkanBuffer(size, fullUsage, 8, required, 0);
+    }
+
+    public void invalidate(long offset, long size) {
+        Vma.vmaInvalidateAllocation(VulkanBridge.instance().getVmaAllocator(), this.allocation, offset, size);
     }
 
     public static VulkanBuffer createHostVisible(VulkanBridge bridge, long size, int extraUsage) {

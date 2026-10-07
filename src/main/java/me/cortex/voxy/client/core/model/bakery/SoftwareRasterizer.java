@@ -1,6 +1,5 @@
 package me.cortex.voxy.client.core.model.bakery;
 
-import net.caffeinemc.mods.sodium.api.util.ColorMixer;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.joml.Vector3i;
@@ -251,8 +250,16 @@ public class SoftwareRasterizer {
         int blendAlpha = Math.min(0xFF,srcAlpha+((dstAlpha*(255-srcAlpha))>>8));
         //how much did we actually get
 
-        int blend = ColorMixer.mix(dst, scr, dstAlpha);//addRGB(ColorABGR.mulRGB(scr, 255-dstAlpha),ColorABGR.mulRGB(dst, dstAlpha));
+        int blend = mixColors(dst, scr, dstAlpha);
         return blend|(blendAlpha<<24);
+    }
+
+    private static int mixColors(int c1, int c2, int factor) {
+        int inv = 255 - factor;
+        int r = (((c1 & 0xFF) * factor) + ((c2 & 0xFF) * inv)) >> 8;
+        int g = ((((c1 >> 8) & 0xFF) * factor) + (((c2 >> 8) & 0xFF) * inv)) >> 8;
+        int b = ((((c1 >> 16) & 0xFF) * factor) + (((c2 >> 16) & 0xFF) * inv)) >> 8;
+        return (r & 0xFF) | ((g & 0xFF) << 8) | ((b & 0xFF) << 16);
     }
 
     private static int addRGB(int a, int b) {

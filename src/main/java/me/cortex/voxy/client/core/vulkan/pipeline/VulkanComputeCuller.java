@@ -118,22 +118,47 @@ public class VulkanComputeCuller {
         int groupCountX = (sectionCount + 127) / 128;
         this.cmdgenPipeline.dispatch(cb, groupCountX, 1, 1);
 
-        // 4. Barrier from compute write to draw indirect read
+        // 4. Barrier from compute write to draw indirect read and vertex shader storage buffer read
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkBufferMemoryBarrier.Buffer barrier = VkBufferMemoryBarrier.calloc(1, stack)
+            VkBufferMemoryBarrier.Buffer barriers = VkBufferMemoryBarrier.calloc(3, stack);
+
+            // drawCallBuffer barrier
+            barriers.get(0)
                     .sType(VK12.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER)
                     .srcAccessMask(VK12.VK_ACCESS_SHADER_WRITE_BIT)
-                    .dstAccessMask(VK12.VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK12.VK_ACCESS_SHADER_READ_BIT)
+                    .dstAccessMask(VK12.VK_ACCESS_INDIRECT_COMMAND_READ_BIT)
                     .srcQueueFamilyIndex(VK12.VK_QUEUE_FAMILY_IGNORED)
                     .dstQueueFamilyIndex(VK12.VK_QUEUE_FAMILY_IGNORED)
                     .buffer(drawCallBuffer.getHandle())
                     .offset(0)
                     .size(drawCallBuffer.getSize());
 
+            // positionScratchBuffer barrier
+            barriers.get(1)
+                    .sType(VK12.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER)
+                    .srcAccessMask(VK12.VK_ACCESS_SHADER_WRITE_BIT)
+                    .dstAccessMask(VK12.VK_ACCESS_SHADER_READ_BIT)
+                    .srcQueueFamilyIndex(VK12.VK_QUEUE_FAMILY_IGNORED)
+                    .dstQueueFamilyIndex(VK12.VK_QUEUE_FAMILY_IGNORED)
+                    .buffer(positionScratchBuffer.getHandle())
+                    .offset(0)
+                    .size(positionScratchBuffer.getSize());
+
+            // drawCountBuffer barrier (host read)
+            barriers.get(2)
+                    .sType(VK12.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER)
+                    .srcAccessMask(VK12.VK_ACCESS_SHADER_WRITE_BIT)
+                    .dstAccessMask(VK12.VK_ACCESS_HOST_READ_BIT)
+                    .srcQueueFamilyIndex(VK12.VK_QUEUE_FAMILY_IGNORED)
+                    .dstQueueFamilyIndex(VK12.VK_QUEUE_FAMILY_IGNORED)
+                    .buffer(drawCountBuffer.getHandle())
+                    .offset(0)
+                    .size(drawCountBuffer.getSize());
+
             VK12.vkCmdPipelineBarrier(cb,
                     VK12.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                    VK12.VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK12.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-                    0, null, barrier, null);
+                    VK12.VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK12.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK12.VK_PIPELINE_STAGE_HOST_BIT,
+                    0, null, barriers, null);
         }
     }
 

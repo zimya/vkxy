@@ -177,7 +177,11 @@ public class NodeManager {
     }
 
 
-    IntOpenHashSet getTopLevelNodeIds() {
+    public NodeStore getNodeData() {
+        return this.nodeData;
+    }
+
+    public IntOpenHashSet getTopLevelNodeIds() {
         return this.topLevelNodeIds;
     }
 
@@ -1366,7 +1370,7 @@ public class NodeManager {
     }
 
     //Used for raw access to the update map, internal (used in async)
-    IntOpenHashSet getNodeUpdates() {
+    public IntOpenHashSet getNodeUpdates() {
         return this.nodeUpdates;
     }
 
@@ -1431,6 +1435,10 @@ public class NodeManager {
 
     public int getCurrentMaxNodeId() {
         return this.nodeData.getEndNodeId();
+    }
+
+    public long[] getActiveSectionPositions() {
+        return this.activeSectionMap.keySet().toLongArray();
     }
 
 

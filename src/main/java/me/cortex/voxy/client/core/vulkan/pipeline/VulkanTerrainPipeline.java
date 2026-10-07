@@ -122,8 +122,14 @@ public class VulkanTerrainPipeline {
             String fragSrc = ShaderLoader.parse("voxy:lod/gl46/quads.frag");
             fragSrc = fragSrc.replace("layout(binding = 0) uniform sampler2D blockModelAtlas;", "layout(binding = 6) uniform sampler2D blockModelAtlas;");
             fragSrc = fragSrc.replace("layout(binding = 2) uniform sampler2D depthTex;", "layout(binding = 8) uniform sampler2D depthTex;");
+            // Disable depthTex discard comparison when depthTex is not a real depth buffer (avoids false bottom-viewport clipping)
+            fragSrc = fragSrc.replace(
+                    "if (DEPTH_SCALAR_COMPARE(gl_FragCoord.z, texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r)) {",
+                    "if (false && DEPTH_SCALAR_COMPARE(gl_FragCoord.z, texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r)) {"
+            );
             Map<String, String> fragDefines = new HashMap<>();
             fragDefines.put("LIGHTING_SAMPLER_BINDING", "7");
+            fragDefines.put("USE_REVERSE_Z", "1");
             ByteBuffer fragSpv = VulkanSpirvCompiler.compile("quads.frag", fragSrc, VulkanSpirvCompiler.STAGE_FRAGMENT, fragDefines);
 
             long vertModule = createShaderModule(vertSpv, stack);

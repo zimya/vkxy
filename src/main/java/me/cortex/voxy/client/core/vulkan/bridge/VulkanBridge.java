@@ -25,11 +25,18 @@ import me.cortex.voxy.client.mixin.vulkan.AccessorFrontendRenderPass;
 import me.cortex.voxy.client.mixin.vulkan.AccessorVulkanCommandEncoder;
 import me.cortex.voxy.client.mixin.vulkan.AccessorVulkanRenderPass;
 import me.cortex.voxy.common.Logger;
+import org.lwjgl.PointerBuffer;
+import org.lwjgl.system.MemoryStack;
+import org.lwjgl.vulkan.VK12;
 import org.lwjgl.vulkan.VkCommandBuffer;
+import org.lwjgl.vulkan.VkCommandBufferAllocateInfo;
+import org.lwjgl.vulkan.VkCommandBufferBeginInfo;
+import org.lwjgl.vulkan.VkCommandPoolCreateInfo;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkInstance;
 import org.lwjgl.vulkan.VkQueue;
 
+import java.nio.LongBuffer;
 import java.util.Objects;
 
 /**
@@ -41,10 +48,24 @@ public final class VulkanBridge {
 
     private final FrontendGpuDevice frontendDevice;
     private final VulkanDevice vulkanDevice;
+    private long transientCommandPool;
 
     private VulkanBridge(FrontendGpuDevice frontendDevice, VulkanDevice vulkanDevice) {
         this.frontendDevice = Objects.requireNonNull(frontendDevice, "frontendDevice");
         this.vulkanDevice = Objects.requireNonNull(vulkanDevice, "vulkanDevice");
+
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkCommandPoolCreateInfo poolInfo = VkCommandPoolCreateInfo.calloc(stack)
+                    .sType(VK12.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO)
+                    .queueFamilyIndex(this.vulkanDevice.graphicsQueue().queueFamilyIndex())
+                    .flags(VK12.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
+            LongBuffer pPool = stack.callocLong(1);
+            int res = VK12.vkCreateCommandPool(this.vulkanDevice.vkDevice(), poolInfo, null, pPool);
+            if (res != VK12.VK_SUCCESS) {
+                throw new RuntimeException("Failed to create transient VkCommandPool: " + res);
+            }
+            this.transientCommandPool = pPool.get(0);
+        }
     }
 
     public static boolean isVulkanDevice(GpuDevice device) {
@@ -159,16 +180,47 @@ public final class VulkanBridge {
     }
 
     public VkCommandBuffer allocateTransientCommandBuffer() {
-        return this.getCommandEncoder().allocateAndBeginTransientCommandBuffer();
+        return beginTransientCommandBuffer();
     }
 
     public VkCommandBuffer beginTransientCommandBuffer() {
-        return allocateTransientCommandBuffer();
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkCommandBufferAllocateInfo allocInfo = VkCommandBufferAllocateInfo.calloc(stack)
+                    .sType(VK12.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO)
+                    .commandPool(this.transientCommandPool)
+                    .level(VK12.VK_COMMAND_BUFFER_LEVEL_PRIMARY)
+                    .commandBufferCount(1);
+            PointerBuffer pCb = stack.callocPointer(1);
+            int res = VK12.vkAllocateCommandBuffers(this.vulkanDevice.vkDevice(), allocInfo, pCb);
+            if (res != VK12.VK_SUCCESS) {
+                throw new RuntimeException("Failed to allocate transient VkCommandBuffer: " + res);
+            }
+            VkCommandBuffer cb = new VkCommandBuffer(pCb.get(0), this.vulkanDevice.vkDevice());
+
+            VkCommandBufferBeginInfo beginInfo = VkCommandBufferBeginInfo.calloc(stack)
+                    .sType(VK12.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO)
+                    .flags(VK12.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
+            res = VK12.vkBeginCommandBuffer(cb, beginInfo);
+            if (res != VK12.VK_SUCCESS) {
+                throw new RuntimeException("Failed to begin transient VkCommandBuffer: " + res);
+            }
+            return cb;
+        }
     }
 
     public void endAndSubmitTransientCommandBuffer(VkCommandBuffer cb) {
-        executeCommandBuffer(cb);
-        waitIdle();
+        int res = VK12.vkEndCommandBuffer(cb);
+        if (res != VK12.VK_SUCCESS) {
+            throw new RuntimeException("Failed to end transient VkCommandBuffer: " + res);
+        }
+
+        var submission = this.vulkanDevice.graphicsQueue().beginSubmit();
+        submission.executeCommands(cb);
+        submission.close();
+
+        this.vulkanDevice.graphicsQueue().waitIdle();
+
+        VK12.vkResetCommandPool(this.vulkanDevice.vkDevice(), this.transientCommandPool, 0);
     }
 
     public VkCommandBuffer getOrCreateActiveCommandBuffer() {
@@ -256,5 +308,12 @@ public final class VulkanBridge {
         this.vulkanDevice.graphicsQueue().waitIdle();
         this.vulkanDevice.computeQueue().waitIdle();
         this.vulkanDevice.transferQueue().waitIdle();
+    }
+
+    public void destroy() {
+        if (this.transientCommandPool != 0) {
+            VK12.vkDestroyCommandPool(this.vulkanDevice.vkDevice(), this.transientCommandPool, null);
+            this.transientCommandPool = 0;
+        }
     }
 }

@@ -47,7 +47,8 @@ public class VulkanSectionRenderer {
         this.drawCallBuffer = VulkanBuffer.createDeviceStorage(bridge, (long) TOTAL_DRAW_COUNT * 20,
                 VK12.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK12.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
 
-        this.drawCountCallBuffer = VulkanBuffer.createDeviceStorage(bridge, 256,
+        // Host visible so CPU can read exact opaqueDrawCount after dispatch
+        this.drawCountCallBuffer = VulkanBuffer.createHostVisible(bridge, 256,
                 VK12.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK12.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
 
         this.visibilityBuffer = VulkanBuffer.createHostVisible(bridge, (long) maxSections * 4, 0);
@@ -89,8 +90,13 @@ public class VulkanSectionRenderer {
         }
     }
 
+    private int currentOpaqueDrawCount = 0;
+
     public void buildDrawCalls(int sectionCount) {
-        if (sectionCount <= 0) return;
+        if (sectionCount <= 0) {
+            this.currentOpaqueDrawCount = 0;
+            return;
+        }
 
         VkCommandBuffer cb = this.bridge.beginTransientCommandBuffer();
         try {
@@ -107,12 +113,21 @@ public class VulkanSectionRenderer {
         } finally {
             this.bridge.endAndSubmitTransientCommandBuffer(cb);
         }
+
+        // Invalidate host cache for drawCountCallBuffer and read exact opaque draw count
+        this.drawCountCallBuffer.invalidate(0, 64);
+        long ptr = this.drawCountCallBuffer.map();
+        int actualDrawCount = org.lwjgl.system.MemoryUtil.memGetInt(ptr + 12);
+        this.currentOpaqueDrawCount = Math.max(0, Math.min(actualDrawCount, OPAQUE_DRAW_COUNT));
+    }
+
+    public void clearDrawCalls() {
+        this.currentOpaqueDrawCount = 0;
     }
 
     public void renderOpaque(VkCommandBuffer cb, long lightmapView, long lightmapSampler, int sectionCount) {
-        if (sectionCount <= 0) return;
+        if (sectionCount <= 0 || this.currentOpaqueDrawCount <= 0) return;
 
-        int maxDrawCount = Math.min((int) (sectionCount * 7L + 128), OPAQUE_DRAW_COUNT);
         this.terrainPipeline.bindAndDraw(cb, false,
                 this.viewport.getUniformBuffer(),
                 this.geometryData.getGeometryBuffer(),
@@ -127,30 +142,15 @@ public class VulkanSectionRenderer {
                 0, 0,
                 this.indexBuffer,
                 this.drawCallBuffer,
-                maxDrawCount
+                this.currentOpaqueDrawCount
         );
     }
 
     public void renderTranslucent(VkCommandBuffer cb, long lightmapView, long lightmapSampler, int sectionCount) {
-        if (sectionCount <= 0) return;
-
-        int maxDrawCount = Math.min(sectionCount, TRANSLUCENT_DRAW_COUNT);
-        this.terrainPipeline.bindAndDraw(cb, true,
-                this.viewport.getUniformBuffer(),
-                this.geometryData.getGeometryBuffer(),
-                this.geometryData.getMetadataBuffer(),
-                this.modelStore.getModelBuffer(),
-                this.modelStore.getModelColourBuffer(),
-                this.positionScratchBuffer,
-                this.modelStore.getVkImageView(),
-                this.modelStore.getVkSampler(),
-                lightmapView,
-                lightmapSampler,
-                0, 0,
-                this.indexBuffer,
-                this.drawCallBuffer,
-                maxDrawCount
-        );
+        // Translucent indirect draw generation (buildtranslucents.comp) is not yet implemented for Vulkan.
+        // Rendering drawCallBuffer[0] here erroneously blends opaque geometry with depth write disabled,
+        // causing underground caves to show through the terrain (State 3).
+        return;
     }
 
     public void free() {
