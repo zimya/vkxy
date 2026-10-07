@@ -30,7 +30,16 @@ public class VulkanOctreeTraverser {
         double camY = camera.position().y();
         double camZ = camera.position().z();
 
-        Matrix4f viewProj = new Matrix4f(projMatrix).mul(viewRotation);
+        float maxDistBlocks = sectionRenderDistance * 512.0f;
+        double maxDistSq = (double) maxDistBlocks * (double) maxDistBlocks;
+
+        float nearFrustum = 0.05f;
+        float farFrustum = maxDistBlocks;
+        Matrix4f frustumProj = new Matrix4f(projMatrix)
+                .m22((farFrustum + nearFrustum) / (nearFrustum - farFrustum))
+                .m32((2.0f * farFrustum * nearFrustum) / (nearFrustum - farFrustum));
+
+        Matrix4f viewProj = frustumProj.mul(viewRotation);
         FrustumIntersection frustum = new FrustumIntersection(viewProj);
 
         float m11 = Math.abs(projMatrix.m11());
@@ -38,9 +47,6 @@ public class VulkanOctreeTraverser {
         float focalLength = (viewportHeight * m11) * 0.5f;
         float factor = focalLength / subDivSize;
         float factorSq = factor * factor;
-
-        float maxDistBlocks = sectionRenderDistance * 512.0f;
-        double maxDistSq = (double) maxDistBlocks * (double) maxDistBlocks;
 
         this.queue.clear();
         for (int topId : this.nodeManager.getTopLevelNodeIds()) {
@@ -87,7 +93,7 @@ public class VulkanOctreeTraverser {
                 float relMaxY = (float) (maxY - camY);
                 float relMinZ = (float) (minZ - camZ);
                 float relMaxZ = (float) (maxZ - camZ);
-                if (frustum.intersectAab(relMinX, relMinY, relMinZ, relMaxX, relMaxY, relMaxZ) == FrustumIntersection.OUTSIDE) {
+                if (!frustum.testAab(relMinX, relMinY, relMinZ, relMaxX, relMaxY, relMaxZ)) {
                     continue;
                 }
             }

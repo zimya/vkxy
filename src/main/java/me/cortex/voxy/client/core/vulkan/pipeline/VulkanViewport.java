@@ -119,7 +119,7 @@ public class VulkanViewport {
         var extraProjection = rawMCProj.invert(new Matrix4f()).mul(baseProjection);
         var properties = me.cortex.voxy.client.core.RenderProperties.getRenderProperties();
 
-        float near = 16f;
+        float near = 0.05f;
         float far = 16f * 3000f; // 48000 blocks
 
         // Flip near and far on reverse depth

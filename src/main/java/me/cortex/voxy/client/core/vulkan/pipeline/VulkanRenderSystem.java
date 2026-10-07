@@ -188,7 +188,7 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
 
         // Run hierarchical octree traversal
         int visibleCount = this.traverser.traverse(
-                camera, viewMatrix, voxyProj, width, height,
+                camera, viewMatrix, mcProj, width, height,
                 VoxyConfig.CONFIG.sectionRenderDistance, this.activeSectionIds
         );
 
