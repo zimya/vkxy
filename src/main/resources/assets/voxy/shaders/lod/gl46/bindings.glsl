@@ -3,6 +3,10 @@ layout(binding = 0, std140) uniform SceneUniform {
     ivec3 baseSectionPos;
     uint frameId;
     vec3 cameraSubPos;
+    float pad0;
+    vec4 fogColor;
+    vec4 fogParams;
+    vec4 fadeParams;
 };
 
 //TODO: see if making the stride 2*4*4 bytes or something cause you get that 16 byte write

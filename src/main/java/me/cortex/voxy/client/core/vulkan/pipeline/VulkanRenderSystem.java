@@ -140,7 +140,48 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
         Matrix4f voxyProj = VulkanViewport.computeVulkanProjection(mcProj);
         Matrix4f viewMatrix = camera.getViewRotationMatrix(new Matrix4f());
 
-        this.sectionRenderer.getViewport().update(voxyProj, viewMatrix, camX, camY, camZ);
+        // Compute Fog & Fade parameters
+        org.joml.Vector4f fogColor = new org.joml.Vector4f(0, 0, 0, 0);
+        org.joml.Vector4f fogParams = new org.joml.Vector4f(0, 0, 0, 0);
+        org.joml.Vector4f fadeParams = new org.joml.Vector4f(0, 0, 0, 0);
+
+        var gameRenderState = client.gameRenderer.gameRenderState();
+        if (gameRenderState != null && gameRenderState.levelRenderState != null && gameRenderState.levelRenderState.cameraRenderState != null) {
+            var cameraRenderState = gameRenderState.levelRenderState.cameraRenderState;
+            var fogData = cameraRenderState.fogData;
+            if (fogData != null) {
+                fogColor.set(fogData.color.x, fogData.color.y, fogData.color.z, fogData.color.w);
+
+                var fogMode = VoxyConfig.CONFIG.getFogMode();
+                float vanillaRd = Minecraft.getInstance().options.getEffectiveRenderDistance() * 16.0f;
+                float start = fogData.environmentalStart;
+                float end = fogData.environmentalEnd;
+                boolean fogCoversAllRendering = end < vanillaRd;
+
+                if (fogMode.hasFog || fogCoversAllRendering) {
+                    if (Math.abs(end - start) > 1.0f) {
+                        float invEndFogDelta = 1.0f / (end - start);
+                        float endDistance = Math.max(vanillaRd, 20.0f * 16.0f) * (float) Math.sqrt(3.0);
+                        float startDelta = -start * invEndFogDelta;
+                        float maxFogLerp = fogCoversAllRendering ? 1.0f : Math.clamp(endDistance * invEndFogDelta + startDelta, 0.0f, 1.0f);
+                        fogParams.set(invEndFogDelta, startDelta, maxFogLerp, fogCoversAllRendering ? 1.0f : 0.0f);
+                    }
+                }
+
+                if (fogMode.hasFade && !fogCoversAllRendering) {
+                    int mode = 1; // 1: XZ distance
+                    float rd = VoxyConfig.CONFIG.sectionRenderDistance * 16.0f * 32.0f - (float) Math.sqrt(32.0 * 32.0);
+                    float fadeStart = Math.max(vanillaRd, rd * 0.9f);
+                    float fadeEnd = Math.max(vanillaRd, rd);
+                    if (fadeEnd > fadeStart) {
+                        float scale = 1.0f / (fadeEnd - fadeStart);
+                        fadeParams.set(mode, (-fadeStart) * scale, scale, 0.0f);
+                    }
+                }
+            }
+        }
+
+        this.sectionRenderer.getViewport().update(voxyProj, viewMatrix, camX, camY, camZ, fogColor, fogParams, fadeParams);
 
         int width = client.getWindow().getWidth();
         int height = client.getWindow().getHeight();
@@ -230,10 +271,18 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
 
     @Override
     public void renderTranslucent(RenderPass renderPass) {
-        // Translucent indirect draw generation (buildtranslucents.comp) is not yet implemented for Vulkan.
-        // Rendering drawCallBuffer[0] here erroneously blends opaque geometry with depth write disabled,
-        // causing underground caves to show through the terrain (State 3).
-        return;
+        VkCommandBuffer cb = this.bridge.extractCommandBuffer(renderPass);
+        if (cb == null) return;
+
+        GpuTextureView lightmapView = Minecraft.getInstance().gameRenderer.levelLightmap();
+        GpuSampler sampler = RenderSystem.getSamplerCache().getClampToEdge(com.mojang.renderpearl.api.textures.FilterMode.LINEAR);
+        long vkLightmapView = this.bridge.getVkImageView(lightmapView);
+        long vkLightmapSampler = this.bridge.getVkSampler(sampler);
+
+        int count = this.activeSectionIds.size();
+        if (count > 0) {
+            this.sectionRenderer.renderTranslucent(cb, vkLightmapView, vkLightmapSampler, count);
+        }
     }
 
     @Override

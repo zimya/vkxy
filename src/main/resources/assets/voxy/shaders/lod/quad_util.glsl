@@ -150,9 +150,13 @@ void setupQuad(out QuadData quad, const in Quad rawQuad, uvec2 sPos, bool genera
     quad.uvCorner = faceSize.xz;
 }
 
-vec4 getQuadCornerPos(in QuadData quad, uint cornerId) {
+vec3 getQuadCornerPoint(in QuadData quad, uint cornerId) {
     vec2 cornerMask = vec2((cornerId>>1)&1u, cornerId&1u)*quad.lodScale;
-    vec3 point = quad.basePoint + swizzelDataAxis(quad.axis,vec3(quad.quadSizeAddin*cornerMask,0));
+    return quad.basePoint + swizzelDataAxis(quad.axis,vec3(quad.quadSizeAddin*cornerMask,0));
+}
+
+vec4 getQuadCornerPos(in QuadData quad, uint cornerId) {
+    vec3 point = getQuadCornerPoint(quad, cornerId);
     vec4 pos = MVP * vec4(point, 1.0f);
     pos.xy += taaOffset*pos.w;
     return pos;

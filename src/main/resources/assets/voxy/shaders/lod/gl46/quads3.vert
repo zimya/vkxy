@@ -29,6 +29,7 @@ layout(location = 0) out flat uvec4 interData;
 #ifndef USE_NV_BARRY
 layout(location = 1) out vec2 uv;
 #endif
+layout(location = 2) out vec3 camRelPos;
 
 #ifdef USE_NV_JANK
 #ifdef GL_NV_gpu_shader5
@@ -55,6 +56,11 @@ void main() {
     setupQuad(quad, quadData[uint(gl_VertexID)>>2], pos, (gl_VertexID&3) == 1);
 
     uint cornerId = gl_VertexID&3;
+    vec3 cornerPoint = getQuadCornerPoint(quad, cornerId);
+    camRelPos = cornerPoint - cameraSubPos;
+
+    vec4 pos4 = MVP * vec4(cornerPoint, 1.0f);
+    pos4.xy += taaOffset*pos4.w;
 
     gl_Position =
     #ifdef USE_NV_JANK
@@ -62,7 +68,7 @@ void main() {
     f16vec4
     #endif
     #endif
-    (getQuadCornerPos(quad, cornerId));
+    (pos4);
 
 
     #ifndef USE_NV_BARRY

@@ -28,6 +28,11 @@ public class VulkanViewport {
     }
 
     public void update(Matrix4fc proj, Matrix4fc view, double camX, double camY, double camZ) {
+        update(proj, view, camX, camY, camZ, null, null, null);
+    }
+
+    public void update(Matrix4fc proj, Matrix4fc view, double camX, double camY, double camZ,
+                       org.joml.Vector4fc fogColor, org.joml.Vector4fc fogParams, org.joml.Vector4fc fadeParams) {
         this.cameraX = camX;
         this.cameraY = camY;
         this.cameraZ = camZ;
@@ -63,11 +68,50 @@ public class VulkanViewport {
         MemoryUtil.memPutInt(ptr, this.section.z); ptr += 4;
         MemoryUtil.memPutInt(ptr, this.frameId & 0x7FFFFFFF); ptr += 4;
 
-        // vec3 cameraSubPos (12 bytes) + 4 bytes pad
+        // vec3 cameraSubPos (12 bytes) + 4 bytes pad0
         MemoryUtil.memPutFloat(ptr, (float) this.innerTranslation.x); ptr += 4;
         MemoryUtil.memPutFloat(ptr, (float) this.innerTranslation.y); ptr += 4;
         MemoryUtil.memPutFloat(ptr, (float) this.innerTranslation.z); ptr += 4;
-        MemoryUtil.memPutInt(ptr, 0); // pad
+        MemoryUtil.memPutInt(ptr, 0); ptr += 4; // pad0
+
+        // vec4 fogColor (16 bytes)
+        if (fogColor != null) {
+            MemoryUtil.memPutFloat(ptr, fogColor.x()); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, fogColor.y()); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, fogColor.z()); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, fogColor.w()); ptr += 4;
+        } else {
+            MemoryUtil.memPutFloat(ptr, 0f); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, 0f); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, 0f); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, 0f); ptr += 4;
+        }
+
+        // vec4 fogParams (16 bytes)
+        if (fogParams != null) {
+            MemoryUtil.memPutFloat(ptr, fogParams.x()); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, fogParams.y()); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, fogParams.z()); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, fogParams.w()); ptr += 4;
+        } else {
+            MemoryUtil.memPutFloat(ptr, 0f); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, 0f); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, 0f); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, 0f); ptr += 4;
+        }
+
+        // vec4 fadeParams (16 bytes)
+        if (fadeParams != null) {
+            MemoryUtil.memPutFloat(ptr, fadeParams.x()); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, fadeParams.y()); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, fadeParams.z()); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, fadeParams.w()); ptr += 4;
+        } else {
+            MemoryUtil.memPutFloat(ptr, 0f); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, 0f); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, 0f); ptr += 4;
+            MemoryUtil.memPutFloat(ptr, 0f); ptr += 4;
+        }
     }
 
     public static Matrix4f computeVulkanProjection(Matrix4fc baseProjection) {

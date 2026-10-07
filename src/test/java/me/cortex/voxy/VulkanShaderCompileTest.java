@@ -55,5 +55,39 @@ public class VulkanShaderCompileTest {
         } catch (Exception e) {
             System.err.println("quads.frag failed: " + e.getMessage());
         }
+
+        System.out.println("Testing translucent quads.frag...");
+        Map<String, String> transFragDefines = new HashMap<>(fragDefines);
+        transFragDefines.put("TRANSLUCENT", "1");
+        try {
+            ByteBuffer spvTransFrag = VulkanSpirvCompiler.compile("quads.frag", fragSrc, VulkanSpirvCompiler.STAGE_FRAGMENT, transFragDefines);
+            System.out.println("translucent quads.frag compiled successfully! Bytes: " + spvTransFrag.remaining());
+        } catch (Exception e) {
+            System.err.println("translucent quads.frag failed: " + e.getMessage());
+        }
+
+        System.out.println("Testing simple.comp (prefix sum)...");
+        String simpleSrc = ShaderLoader.parse("voxy:util/prefixsum/simple.comp");
+        Map<String, String> simpleDefines = new HashMap<>();
+        simpleDefines.put("IO_BUFFER", "0");
+        try {
+            ByteBuffer spvSimple = VulkanSpirvCompiler.compile("simple.comp", simpleSrc, VulkanSpirvCompiler.STAGE_COMPUTE, simpleDefines);
+            System.out.println("simple.comp compiled successfully! Bytes: " + spvSimple.remaining());
+        } catch (Exception e) {
+            System.err.println("simple.comp failed: " + e.getMessage());
+        }
+
+        System.out.println("Testing buildtranslucents.comp...");
+        String buildTransSrc = ShaderLoader.parse("voxy:lod/gl46/buildtranslucents.comp");
+        Map<String, String> transDefines = new HashMap<>();
+        transDefines.put("TRANSLUCENT_WRITE_BASE", "1024");
+        transDefines.put("TRANSLUCENT_DISTANCE_BUFFER_BINDING", "5");
+        transDefines.put("TRANSLUCENT_OFFSET", "400000");
+        try {
+            ByteBuffer spvTrans = VulkanSpirvCompiler.compile("buildtranslucents.comp", buildTransSrc, VulkanSpirvCompiler.STAGE_COMPUTE, transDefines);
+            System.out.println("buildtranslucents.comp compiled successfully! Bytes: " + spvTrans.remaining());
+        } catch (Exception e) {
+            System.err.println("buildtranslucents.comp failed: " + e.getMessage());
+        }
     }
 }

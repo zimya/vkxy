@@ -21,6 +21,7 @@ layout(location = 0) in flat uvec4 interData;
 #ifndef USE_NV_BARRY
 layout(location = 1) in vec2 uv;
 #endif
+layout(location = 2) in vec3 camRelPos;
 
 #ifdef DEBUG_RENDER
 layout(location = 7) in flat uint quadDebug;
@@ -187,6 +188,36 @@ void main() {
 
     #ifndef PATCHED_SHADER
     colour = computeColour(texPos, colour);
+
+    // Apply atmospheric fog and distant LoD fade
+    if (fogColor.a > 0.0) {
+        float dist = length(camRelPos);
+        float distXZ = length(camRelPos.xz);
+
+        float fogLerp = 0.0;
+        if (fogParams.x != 0.0 || fogParams.y != 0.0) {
+            fogLerp = clamp(fma(dist, fogParams.x, fogParams.y), 0.0, fogParams.z);
+        }
+
+        float fadeLerp = 0.0;
+        if (fadeParams.x > 0.0) {
+            float len = fadeParams.x > 1.5 ? dist : distXZ;
+            fadeLerp = clamp(fma(len, fadeParams.z, fadeParams.y), 0.0, 1.0);
+        }
+
+        float totalFog = max(fogLerp, fadeLerp);
+        #ifdef TRANSLUCENT
+        colour.rgb = mix(colour.rgb, fogColor.rgb, totalFog * fogColor.a);
+        colour.a *= (1.0 - fadeLerp);
+        if (colour.a <= 0.0) {
+            discard;
+            return;
+        }
+        #else
+        colour.rgb = mix(colour.rgb, fogColor.rgb, totalFog * fogColor.a);
+        #endif
+    }
+
     outColour = colour;
 
     #ifdef DEBUG_RENDER

@@ -127,23 +127,30 @@ public class VulkanTerrainPipeline {
                     "if (DEPTH_SCALAR_COMPARE(gl_FragCoord.z, texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r)) {",
                     "if (false && DEPTH_SCALAR_COMPARE(gl_FragCoord.z, texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r)) {"
             );
-            Map<String, String> fragDefines = new HashMap<>();
-            fragDefines.put("LIGHTING_SAMPLER_BINDING", "7");
-            fragDefines.put("USE_REVERSE_Z", "1");
-            ByteBuffer fragSpv = VulkanSpirvCompiler.compile("quads.frag", fragSrc, VulkanSpirvCompiler.STAGE_FRAGMENT, fragDefines);
+            Map<String, String> opaqueFragDefines = new HashMap<>();
+            opaqueFragDefines.put("LIGHTING_SAMPLER_BINDING", "7");
+            opaqueFragDefines.put("USE_REVERSE_Z", "1");
+            ByteBuffer opaqueFragSpv = VulkanSpirvCompiler.compile("quads.frag", fragSrc, VulkanSpirvCompiler.STAGE_FRAGMENT, opaqueFragDefines);
+
+            Map<String, String> transFragDefines = new HashMap<>(opaqueFragDefines);
+            transFragDefines.put("TRANSLUCENT", "1");
+            ByteBuffer transFragSpv = VulkanSpirvCompiler.compile("quads_translucent.frag", fragSrc, VulkanSpirvCompiler.STAGE_FRAGMENT, transFragDefines);
 
             long vertModule = createShaderModule(vertSpv, stack);
-            long fragModule = createShaderModule(fragSpv, stack);
+            long opaqueFragModule = createShaderModule(opaqueFragSpv, stack);
+            long transFragModule = createShaderModule(transFragSpv, stack);
             MemoryUtil.memFree(vertSpv);
-            MemoryUtil.memFree(fragSpv);
+            MemoryUtil.memFree(opaqueFragSpv);
+            MemoryUtil.memFree(transFragSpv);
 
             // 4. Create Graphics Pipelines
-            this.opaquePipeline = createGraphicsPipeline(vertModule, fragModule, colorFormat, depthFormat, false, stack);
-            this.translucentPipeline = createGraphicsPipeline(vertModule, fragModule, colorFormat, depthFormat, true, stack);
+            this.opaquePipeline = createGraphicsPipeline(vertModule, opaqueFragModule, colorFormat, depthFormat, false, stack);
+            this.translucentPipeline = createGraphicsPipeline(vertModule, transFragModule, colorFormat, depthFormat, true, stack);
 
             // Shader modules can be destroyed after pipeline creation
             VK12.vkDestroyShaderModule(bridge.getDevice(), vertModule, null);
-            VK12.vkDestroyShaderModule(bridge.getDevice(), fragModule, null);
+            VK12.vkDestroyShaderModule(bridge.getDevice(), opaqueFragModule, null);
+            VK12.vkDestroyShaderModule(bridge.getDevice(), transFragModule, null);
 
             Logger.info("VulkanTerrainPipeline initialized successfully (opaque=" + this.opaquePipeline + ", translucent=" + this.translucentPipeline + ")");
         }
@@ -265,6 +272,20 @@ public class VulkanTerrainPipeline {
                             long lightmapView, long lightmapSampler,
                             long depthView, long depthSampler,
                             VulkanIndexBuffer indexBuffer, VulkanBuffer drawBuffer, int drawCount) {
+        bindAndDraw(cb, translucent, uniformBuffer, quadBuffer, metadataBuffer, modelBuffer,
+                modelColourBuffer, positionBuffer, atlasView, atlasSampler, lightmapView,
+                lightmapSampler, depthView, depthSampler, indexBuffer, drawBuffer, 0L, drawCount);
+    }
+
+    public void bindAndDraw(VkCommandBuffer cb, boolean translucent,
+                            VulkanBuffer uniformBuffer, VulkanBuffer quadBuffer,
+                            VulkanBuffer metadataBuffer, VulkanBuffer modelBuffer,
+                            VulkanBuffer modelColourBuffer, VulkanBuffer positionBuffer,
+                            long atlasView, long atlasSampler,
+                            long lightmapView, long lightmapSampler,
+                            long depthView, long depthSampler,
+                            VulkanIndexBuffer indexBuffer, VulkanBuffer drawBuffer,
+                            long drawByteOffset, int drawCount) {
         long pipeline = translucent ? this.translucentPipeline : this.opaquePipeline;
         VK12.vkCmdBindPipeline(cb, VK12.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
@@ -342,7 +363,7 @@ public class VulkanTerrainPipeline {
         indexBuffer.bind(cb);
 
         // Issue Indirect Draw
-        VK12.vkCmdDrawIndexedIndirect(cb, drawBuffer.getHandle(), 0, drawCount, 20);
+        VK12.vkCmdDrawIndexedIndirect(cb, drawBuffer.getHandle(), drawByteOffset, drawCount, 20);
     }
 
     public void free() {
