@@ -20,6 +20,7 @@ import me.cortex.voxy.common.thread.ServiceManager;
 import me.cortex.voxy.common.world.WorldEngine;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
+import org.joml.FrustumIntersection;
 import org.joml.Matrix4f;
 import org.lwjgl.vulkan.VK12;
 import org.lwjgl.vulkan.VkCommandBuffer;
@@ -57,7 +58,7 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
         Logger.info("Creating Vulkan render system on " + this.bridge.getDevice().toString());
 
         int maxSections = 1 << 19; // 524,288 sections
-        long geometryCapacity = 1024L * 1024 * 1024; // 1GB geometry buffer (aligned with original Voxy)
+        long geometryCapacity = 1536L * 1024 * 1024; // 1.5GB geometry buffer for distant LoDs and zoom
 
         this.modelStore = new VulkanModelStore(this.bridge);
         this.geometryData = new VulkanSectionGeometryData(this.bridge, maxSections, geometryCapacity);
@@ -79,14 +80,17 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
                 section -> this.childChangesQueue.add(new ChildChange(section.key, section.getNonEmptyChildren()))
         );
 
-        this.traverser = new VulkanOctreeTraverser(this.nodeManager);
+        this.traverser = new VulkanOctreeTraverser(this.nodeManager, this.renderGen);
 
         Arrays.stream(world.getMapper().getBiomeEntries()).forEach(this.modelService::addBiome);
         world.getMapper().setBiomeCallback(this.modelService::addBiome);
 
         int minSec = Minecraft.getInstance().level.getMinSectionY() >> 5;
         int maxSec = (Minecraft.getInstance().level.getMaxSectionY() - 1) >> 5;
-        this.renderDistanceTracker = new RenderDistanceTracker(40, minSec, maxSec,
+        Camera cam = Minecraft.getInstance().gameRenderer.mainCamera();
+        double initX = cam != null ? cam.position().x() : (Minecraft.getInstance().player != null ? Minecraft.getInstance().player.getX() : 0.0);
+        double initZ = cam != null ? cam.position().z() : (Minecraft.getInstance().player != null ? Minecraft.getInstance().player.getZ() : 0.0);
+        this.renderDistanceTracker = new RenderDistanceTracker(250, minSec, maxSec, initX, initZ,
                 this.nodeManager::insertTopLevelNode, this.nodeManager::removeTopLevelNode);
 
         this.setRenderDistance(VoxyConfig.CONFIG.sectionRenderDistance);
@@ -133,7 +137,8 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
         double camZ = camera.position().z();
 
         // Process render distance tracking (top-level nodes)
-        this.renderDistanceTracker.setCenterAndProcess(camX, camZ);
+        int trackerIters = 0;
+        while (this.renderDistanceTracker.setCenterAndProcess(camX, camZ) && trackerIters++ < 4) {}
 
         // Update Viewport
         var mcProj = client.gameRenderer.gameRenderState().levelRenderState.cameraRenderState.projectionMatrix;
@@ -205,38 +210,75 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
 
     private void tickEviction(double camX, double camY, double camZ) {
         this.evictionTickCounter++;
-        // Check eviction every 60 frames (~1s)
-        if (this.evictionTickCounter % 60 != 0) return;
+        // Check eviction every 30 frames (~0.5s)
+        if (this.evictionTickCounter % 30 != 0) return;
 
-        // If free geometry memory is less than 256MB (same threshold as original NodeCleaner)
+        // Evict when free geometry memory is constrained (< 256MB)
         long freeBytes = this.geometryManager.getFreeBytes();
         if (freeBytes < 256L * 1024 * 1024) {
             long[] positions = this.nodeManager.getActiveSectionPositions();
             if (positions.length == 0) return;
 
-            // Sort positions by 3D distance squared descending (evict furthest first)
-            LongArrayList posList = new LongArrayList(positions);
-            posList.sort((a, b) -> {
+            FrustumIntersection frustum = this.traverser.getLastFrustum();
+
+            // Candidate filtering: NEVER evict nodes that are within the current view frustum!
+            // NEVER evict Level >= 2 nodes to preserve baseline coarse LOD coverage across all angles!
+            LongArrayList candidateList = new LongArrayList();
+            for (long pos : positions) {
+                int lvl = WorldEngine.getLevel(pos);
+                if (lvl >= 2) continue; // Keep Level 2, 3, 4 permanently to guarantee no void holes
+
+                if (frustum != null) {
+                    double minX = (double) (WorldEngine.getX(pos) << lvl) * 32.0;
+                    double minY = (double) (WorldEngine.getY(pos) << lvl) * 32.0;
+                    double minZ = (double) (WorldEngine.getZ(pos) << lvl) * 32.0;
+                    double size = (double) (32 << lvl);
+                    double maxX = minX + size;
+                    double maxY = minY + size;
+                    double maxZ = minZ + size;
+
+                    float relMinX = (float) (minX - camX);
+                    float relMaxX = (float) (maxX - camX);
+                    float relMinY = (float) (minY - camY);
+                    float relMaxY = (float) (maxY - camY);
+                    float relMinZ = (float) (minZ - camZ);
+                    float relMaxZ = (float) (maxZ - camZ);
+
+                    // If node intersects the current view frustum, PROTECT IT!
+                    if (frustum.testAab(relMinX, relMinY, relMinZ, relMaxX, relMaxY, relMaxZ)) {
+                        continue;
+                    }
+                }
+
+                candidateList.add(pos);
+            }
+
+            if (candidateList.isEmpty()) return;
+
+            // Sort: Level 0 first (finest LODs take up 90%+ VRAM), then by distance descending
+            candidateList.sort((a, b) -> {
+                int lvlA = WorldEngine.getLevel(a);
+                int lvlB = WorldEngine.getLevel(b);
+                if (lvlA != lvlB) {
+                    return Integer.compare(lvlA, lvlB); // Lower level evicted first
+                }
                 double distA = getDistanceSq(a, camX, camY, camZ);
                 double distB = getDistanceSq(b, camX, camY, camZ);
                 return Double.compare(distB, distA);
             });
 
-            // Evict up to 256 furthest nodes per sweep (same batch size as original NodeCleaner.OUTPUT_COUNT)
+            // Evict up to 256 outside-frustum nodes per sweep
             int evicted = 0;
             int maxEvict = 256;
-            for (int i = 0; i < posList.size() && evicted < maxEvict; i++) {
-                long pos = posList.getLong(i);
-                // Do not evict Level 4 top-level nodes as they are baseline coverage
-                if (WorldEngine.getLevel(pos) >= 4) continue;
-
+            for (int i = 0; i < candidateList.size() && evicted < maxEvict; i++) {
+                long pos = candidateList.getLong(i);
                 this.nodeManager.removeNodeGeometry(pos);
                 evicted++;
             }
 
             if (evicted > 0) {
                 Logger.info("Vulkan geometry eviction triggered: evicted " + evicted +
-                        " distant nodes. Free: " + (this.geometryManager.getFreeBytes() / (1024 * 1024)) +
+                        " outside-frustum nodes. Free: " + (this.geometryManager.getFreeBytes() / (1024 * 1024)) +
                         "MB / " + (this.geometryManager.getCapacityBytes() / (1024 * 1024)) + "MB");
             }
         }

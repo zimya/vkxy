@@ -2,6 +2,7 @@ package me.cortex.voxy.client.core.vulkan.pipeline;
 
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import me.cortex.voxy.client.config.VoxyConfig;
+import me.cortex.voxy.client.core.rendering.building.RenderGenerationService;
 import me.cortex.voxy.client.core.rendering.hierachical.NodeManager;
 import me.cortex.voxy.client.core.rendering.hierachical.NodeStore;
 import me.cortex.voxy.common.world.WorldEngine;
@@ -11,13 +12,21 @@ import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 
 public class VulkanOctreeTraverser {
-    private static final int MAX_REQUESTS_PER_FRAME = 150;
+    private static final int MAX_REQUESTS_PER_FRAME = 50;
+    private static final double TARGET_QUEUE_SIZE = 2500.0;
 
     private final NodeManager nodeManager;
+    private final RenderGenerationService renderGen;
     private final IntArrayList queue = new IntArrayList(8192);
+    private FrustumIntersection lastFrustum;
 
-    public VulkanOctreeTraverser(NodeManager nodeManager) {
+    public VulkanOctreeTraverser(NodeManager nodeManager, RenderGenerationService renderGen) {
         this.nodeManager = nodeManager;
+        this.renderGen = renderGen;
+    }
+
+    public FrustumIntersection getLastFrustum() {
+        return this.lastFrustum;
     }
 
     public int traverse(Camera camera, Matrix4fc viewRotation, Matrix4fc projMatrix,
@@ -41,12 +50,21 @@ public class VulkanOctreeTraverser {
 
         Matrix4f viewProj = frustumProj.mul(viewRotation);
         FrustumIntersection frustum = new FrustumIntersection(viewProj);
+        this.lastFrustum = frustum;
 
         float m11 = Math.abs(projMatrix.m11());
+        float baseFovM11 = 1.37f;
+        float zoomRatio = Math.max(1.0f, m11 / baseFovM11);
+        double zoomScale = Math.sqrt(zoomRatio);
+
         float subDivSize = Math.max(16.0f, VoxyConfig.CONFIG.subDivisionSize);
         float focalLength = (viewportHeight * m11) * 0.5f;
         float factor = focalLength / subDivSize;
         float factorSq = factor * factor;
+
+        int pendingTasks = this.renderGen.getTaskCount();
+        double fullness = Math.max(0.0, (TARGET_QUEUE_SIZE - pendingTasks) / TARGET_QUEUE_SIZE);
+        int maxRequests = (int) Math.ceil(fullness * fullness * MAX_REQUESTS_PER_FRAME);
 
         this.queue.clear();
         for (int topId : this.nodeManager.getTopLevelNodeIds()) {
@@ -98,19 +116,73 @@ public class VulkanOctreeTraverser {
                 }
             }
 
-            // Descend decision
+            // Descend decision with zoom-aware distance clamping
             boolean shouldDescend = (lvl != 0) && (cameraNearOrInside || (distSq < size * size * factorSq));
+            if (shouldDescend) {
+                double maxLODDist;
+                switch (lvl) {
+                    case 1: // Subdividing lvl 1 into lvl 0 (16-block detail)
+                        maxLODDist = Math.min(1792.0, 384.0 * zoomScale);
+                        break;
+                    case 2: // Subdividing lvl 2 into lvl 1 (32-block detail)
+                        maxLODDist = Math.min(3584.0, 896.0 * zoomScale);
+                        break;
+                    case 3: // Subdividing lvl 3 into lvl 2 (64-block detail)
+                        maxLODDist = Math.min(6144.0, 1792.0 * zoomScale);
+                        break;
+                    default: // Level 4 or higher
+                        maxLODDist = maxDistBlocks;
+                        break;
+                }
+                if (distSq > maxLODDist * maxLODDist) {
+                    shouldDescend = false;
+                }
+            }
 
             if (shouldDescend) {
                 int childPtr = nodeData.getChildPtr(nodeId);
                 if (childPtr != -1) {
                     int childCount = nodeData.getChildPtrCount(nodeId);
+                    boolean allChildrenReady = true;
                     for (int c = 0; c < childCount; c++) {
-                        this.queue.add(childPtr + c);
+                        int cNodeId = childPtr + c;
+                        if (!nodeData.nodeExists(cNodeId)) {
+                            allChildrenReady = false;
+                            break;
+                        }
+                        int cMesh = nodeData.getNodeGeometry(cNodeId);
+                        int cChildPtr = nodeData.getChildPtr(cNodeId);
+                        boolean inFlight = nodeData.isNodeRequestInFlight(cNodeId);
+                        // If child is in-flight or has neither mesh nor deeper child tree, it is an unbuilt gap
+                        if (inFlight || (cMesh == NodeManager.NULL_GEOMETRY_ID && cChildPtr == -1)) {
+                            allChildrenReady = false;
+                            long cPos = nodeData.nodePosition(cNodeId);
+                            if (cPos != -1 && !inFlight && requestCount < maxRequests) {
+                                this.nodeManager.processRequest(cPos);
+                                requestCount++;
+                            }
+                        }
+                    }
+
+                    if (allChildrenReady) {
+                        for (int c = 0; c < childCount; c++) {
+                            this.queue.add(childPtr + c);
+                        }
+                    } else {
+                        // Atomic LOD substitution fallback: render parent geometry while children are incomplete
+                        int parentMesh = nodeData.getNodeGeometry(nodeId);
+                        if (parentMesh >= 1) {
+                            outVisibleSections.add(parentMesh);
+                        } else {
+                            // If parent lacks geometry, queue children anyway to show whatever is available
+                            for (int c = 0; c < childCount; c++) {
+                                this.queue.add(childPtr + c);
+                            }
+                        }
                     }
                 } else {
                     // Node needs subdivision
-                    if (!nodeData.isNodeRequestInFlight(nodeId) && requestCount < MAX_REQUESTS_PER_FRAME) {
+                    if (!nodeData.isNodeRequestInFlight(nodeId) && requestCount < maxRequests) {
                         this.nodeManager.processRequest(pos);
                         requestCount++;
                     }
@@ -126,7 +198,7 @@ public class VulkanOctreeTraverser {
                 if (meshId >= 1) {
                     outVisibleSections.add(meshId);
                 } else if (meshId == NodeManager.NULL_GEOMETRY_ID) {
-                    if (!nodeData.isNodeRequestInFlight(nodeId) && requestCount < MAX_REQUESTS_PER_FRAME) {
+                    if (!nodeData.isNodeRequestInFlight(nodeId) && requestCount < maxRequests) {
                         this.nodeManager.processRequest(pos);
                         requestCount++;
                     }
@@ -140,7 +212,6 @@ public class VulkanOctreeTraverser {
                 }
             }
         }
-
         return outVisibleSections.size();
     }
 }

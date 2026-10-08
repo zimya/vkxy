@@ -17,10 +17,16 @@ public class RenderDistanceTracker {
     private double posX;
     private double posZ;
     public RenderDistanceTracker(int rate, int minSec, int maxSec, LongConsumer addTopLevelNode, LongConsumer removeTopLevelNode) {
+        this(rate, minSec, maxSec, 0.0, 0.0, addTopLevelNode, removeTopLevelNode);
+    }
+
+    public RenderDistanceTracker(int rate, int minSec, int maxSec, double initX, double initZ, LongConsumer addTopLevelNode, LongConsumer removeTopLevelNode) {
         this.addTopLevelNode = addTopLevelNode;
         this.removeTopLevelNode = removeTopLevelNode;
         this.renderDistance = 2;
-        this.tracker = new RingTracker(this.renderDistance, 0, 0, true);
+        this.posX = initX;
+        this.posZ = initZ;
+        this.tracker = new RingTracker(this.renderDistance, ((int)initX)>>9, ((int)initZ)>>9, true);
         this.processRate = rate;
         this.minSec = minSec;
         this.maxSec = maxSec;
