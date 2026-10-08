@@ -33,6 +33,19 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 public class VulkanRenderSystem implements IVoxyRenderSystem {
     private record ChildChange(long key, byte childExistence) {}
 
+    private static final Matrix4f CAPTURED_LEVEL_PROJECTION = new Matrix4f();
+    private static boolean HAS_CAPTURED_LEVEL_PROJECTION = false;
+    private static boolean loggedCapturedProj = false;
+
+    public static void setCapturedLevelProjection(Matrix4f projection) {
+        CAPTURED_LEVEL_PROJECTION.set(projection);
+        HAS_CAPTURED_LEVEL_PROJECTION = true;
+    }
+
+    public static org.joml.Matrix4fc getCapturedLevelProjection() {
+        return HAS_CAPTURED_LEVEL_PROJECTION ? CAPTURED_LEVEL_PROJECTION : null;
+    }
+
     private final WorldEngine worldIn;
     private final VulkanBridge bridge;
     private final VulkanModelStore modelStore;
@@ -147,7 +160,12 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
 
         // Update Viewport
         var mcProj = client.gameRenderer.gameRenderState().levelRenderState.cameraRenderState.projectionMatrix;
-        Matrix4f voxyProj = VulkanViewport.computeVulkanProjection(mcProj);
+        org.joml.Matrix4fc activeProj = HAS_CAPTURED_LEVEL_PROJECTION ? CAPTURED_LEVEL_PROJECTION : mcProj;
+        if (HAS_CAPTURED_LEVEL_PROJECTION && !loggedCapturedProj) {
+            loggedCapturedProj = true;
+            Logger.info("Voxy Vulkan: Successfully captured and applied level projection matrix with view bobbing");
+        }
+        Matrix4f voxyProj = VulkanViewport.computeVulkanProjection(activeProj);
         Matrix4f viewMatrix = camera.getViewRotationMatrix(new Matrix4f());
 
         // Compute Fog & Fade parameters
