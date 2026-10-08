@@ -20,6 +20,7 @@ public class VulkanComputeCuller {
 
     private final VulkanBridge bridge;
     private final VulkanComputePipeline prepPipeline;
+    private final VulkanComputePipeline hizCullPipeline;
     private final VulkanComputePipeline cmdgenPipeline;
     private final VulkanComputePipeline prefixSumPipeline;
     private final VulkanComputePipeline buildTranslucentsPipeline;
@@ -34,7 +35,22 @@ public class VulkanComputeCuller {
                 new int[]{VK12.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK12.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
         );
 
-        // 2. Cmdgen Pipeline
+        // 2. Hi-Z Occlusion Culling Pipeline
+        String hizCullSrc = ShaderLoader.parse("voxy:vulkan/cull/cull_hiz.comp");
+        this.hizCullPipeline = new VulkanComputePipeline(bridge, "cull_hiz.comp", hizCullSrc, Map.of(),
+                new int[]{0, 1, 2, 3, 4, 5},
+                new int[]{
+                        VK12.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, // 0: SceneUniform
+                        VK12.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, // 1: SectionBuffer
+                        VK12.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, // 2: IndirectLookupBuffer
+                        VK12.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, // 3: VisibilityBuffer
+                        VK12.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, // 4: StatisticsBuffer
+                        VK12.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER // 5: hizDepthSampler
+                },
+                20 // 5 uints: count, hizWidth, hizHeight, hizLevels, isHiZReady
+        );
+
+        // 3. Cmdgen Pipeline
         String cmdgenSrc = ShaderLoader.parse("voxy:lod/gl46/cmdgen.comp");
         Map<String, String> defines = new HashMap<>();
         defines.put("TRANSLUCENT_WRITE_BASE", "1024");
@@ -91,16 +107,22 @@ public class VulkanComputeCuller {
                                 VulkanBuffer visibilityBuffer,
                                 VulkanBuffer indirectLookupBuffer,
                                 VulkanBuffer positionScratchBuffer,
-                                VulkanBuffer distanceCountBuffer) {
+                                VulkanBuffer distanceCountBuffer,
+                                VulkanHiZBuffer hizBuffer,
+                                VulkanBuffer statisticsBuffer) {
         if (sectionCount <= 0) return;
 
-        // 1. Zero drawCallBuffer and distance histogram bins (MoltenVK indirect draw fallback)
+        // 1. Zero drawCallBuffer, distance histogram bins, and statisticsBuffer
         VK12.vkCmdFillBuffer(cb, drawCallBuffer.getHandle(), 0, drawCallBuffer.getSize(), 0);
         VK12.vkCmdFillBuffer(cb, distanceCountBuffer.getHandle(), 0, 1024L * 4, 0);
+        if (statisticsBuffer != null) {
+            VK12.vkCmdFillBuffer(cb, statisticsBuffer.getHandle(), 0, statisticsBuffer.getSize(), 0);
+        }
 
         // Barrier after fillBuffer
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkBufferMemoryBarrier.Buffer fillBarriers = VkBufferMemoryBarrier.calloc(2, stack);
+            int fillCount = statisticsBuffer != null ? 3 : 2;
+            VkBufferMemoryBarrier.Buffer fillBarriers = VkBufferMemoryBarrier.calloc(fillCount, stack);
             fillBarriers.get(0)
                     .sType(VK12.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER)
                     .srcAccessMask(VK12.VK_ACCESS_TRANSFER_WRITE_BIT)
@@ -121,13 +143,69 @@ public class VulkanComputeCuller {
                     .offset(0)
                     .size(1024L * 4);
 
+            if (statisticsBuffer != null) {
+                fillBarriers.get(2)
+                        .sType(VK12.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER)
+                        .srcAccessMask(VK12.VK_ACCESS_TRANSFER_WRITE_BIT)
+                        .dstAccessMask(VK12.VK_ACCESS_SHADER_READ_BIT | VK12.VK_ACCESS_SHADER_WRITE_BIT)
+                        .srcQueueFamilyIndex(VK12.VK_QUEUE_FAMILY_IGNORED)
+                        .dstQueueFamilyIndex(VK12.VK_QUEUE_FAMILY_IGNORED)
+                        .buffer(statisticsBuffer.getHandle())
+                        .offset(0)
+                        .size(statisticsBuffer.getSize());
+            }
+
             VK12.vkCmdPipelineBarrier(cb,
                     VK12.VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK12.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     0, null, fillBarriers, null);
         }
 
-        // 2. Dispatch Prep
+        // 2. Dispatch Hi-Z Occlusion Culling
+        if (hizBuffer != null && statisticsBuffer != null) {
+            this.hizCullPipeline.pushDescriptors(cb,
+                    new VulkanComputePipeline.BufferBinding[]{
+                            VulkanComputePipeline.BufferBinding.uniform(0, uniformBuffer),
+                            VulkanComputePipeline.BufferBinding.storage(1, metadataBuffer),
+                            VulkanComputePipeline.BufferBinding.storage(2, indirectLookupBuffer),
+                            VulkanComputePipeline.BufferBinding.storage(3, visibilityBuffer),
+                            VulkanComputePipeline.BufferBinding.storage(4, statisticsBuffer)
+                    },
+                    new VulkanComputePipeline.ImageBinding[]{
+                            VulkanComputePipeline.ImageBinding.sampled(5, hizBuffer.getVkImageView(), hizBuffer.getVkSampler())
+                    }
+            );
+            this.hizCullPipeline.pushConstants(cb,
+                    sectionCount,
+                    hizBuffer.getWidth(),
+                    hizBuffer.getHeight(),
+                    hizBuffer.getLevels(),
+                    hizBuffer.isReady() ? 1 : 0
+            );
+            int hizGroupsX = (sectionCount + 127) / 128;
+            this.hizCullPipeline.dispatch(cb, hizGroupsX, 1, 1);
+
+            // Barrier: visibilityBuffer write -> cmdgen read
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                VkBufferMemoryBarrier.Buffer cullBarrier = VkBufferMemoryBarrier.calloc(1, stack);
+                cullBarrier.get(0)
+                        .sType(VK12.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER)
+                        .srcAccessMask(VK12.VK_ACCESS_SHADER_WRITE_BIT)
+                        .dstAccessMask(VK12.VK_ACCESS_SHADER_READ_BIT | VK12.VK_ACCESS_SHADER_WRITE_BIT)
+                        .srcQueueFamilyIndex(VK12.VK_QUEUE_FAMILY_IGNORED)
+                        .dstQueueFamilyIndex(VK12.VK_QUEUE_FAMILY_IGNORED)
+                        .buffer(visibilityBuffer.getHandle())
+                        .offset(0)
+                        .size(visibilityBuffer.getSize());
+
+                VK12.vkCmdPipelineBarrier(cb,
+                        VK12.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK12.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        0, null, cullBarrier, null);
+            }
+        }
+
+        // 3. Dispatch Prep
         this.prepPipeline.pushBuffers(cb, new VulkanBuffer[]{drawCountBuffer, indirectLookupBuffer});
         this.prepPipeline.dispatch(cb, 1, 1, 1);
 
@@ -149,7 +227,7 @@ public class VulkanComputeCuller {
                     0, null, prepBarrier, null);
         }
 
-        // 3. Dispatch Cmdgen
+        // 4. Dispatch Cmdgen
         this.cmdgenPipeline.pushBuffers(cb, new VulkanBuffer[]{
                 uniformBuffer, drawCallBuffer, drawCountBuffer, metadataBuffer,
                 visibilityBuffer, indirectLookupBuffer, positionScratchBuffer, distanceCountBuffer
@@ -175,7 +253,7 @@ public class VulkanComputeCuller {
                     0, null, barrier, null);
         }
 
-        // 4. Dispatch Prefix Sum (distance radix sorting)
+        // 5. Dispatch Prefix Sum (distance radix sorting)
         this.prefixSumPipeline.pushBuffers(cb, new VulkanBuffer[]{distanceCountBuffer});
         this.prefixSumPipeline.dispatch(cb, 1, 1, 1);
 
@@ -197,16 +275,17 @@ public class VulkanComputeCuller {
                     0, null, barrier, null);
         }
 
-        // 5. Dispatch Build Translucents (writes sorted indirect draw commands)
+        // 6. Dispatch Build Translucents (writes sorted indirect draw commands)
         this.buildTranslucentsPipeline.pushBuffers(cb, new VulkanBuffer[]{
                 uniformBuffer, drawCallBuffer, drawCountBuffer, metadataBuffer,
                 indirectLookupBuffer, distanceCountBuffer
         });
         this.buildTranslucentsPipeline.dispatch(cb, groupCountX, 1, 1);
 
-        // 6. Barrier from compute write to draw indirect read, vertex shader storage buffer read, and host read
+        // 7. Barrier from compute write to draw indirect read, vertex shader storage buffer read, and host read
         try (MemoryStack stack = MemoryStack.stackPush()) {
-            VkBufferMemoryBarrier.Buffer barriers = VkBufferMemoryBarrier.calloc(3, stack);
+            int finalCount = statisticsBuffer != null ? 4 : 3;
+            VkBufferMemoryBarrier.Buffer barriers = VkBufferMemoryBarrier.calloc(finalCount, stack);
 
             // drawCallBuffer barrier
             barriers.get(0)
@@ -241,6 +320,19 @@ public class VulkanComputeCuller {
                     .offset(0)
                     .size(drawCountBuffer.getSize());
 
+            if (statisticsBuffer != null) {
+                // statisticsBuffer barrier (host read)
+                barriers.get(3)
+                        .sType(VK12.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER)
+                        .srcAccessMask(VK12.VK_ACCESS_SHADER_WRITE_BIT)
+                        .dstAccessMask(VK12.VK_ACCESS_HOST_READ_BIT)
+                        .srcQueueFamilyIndex(VK12.VK_QUEUE_FAMILY_IGNORED)
+                        .dstQueueFamilyIndex(VK12.VK_QUEUE_FAMILY_IGNORED)
+                        .buffer(statisticsBuffer.getHandle())
+                        .offset(0)
+                        .size(statisticsBuffer.getSize());
+            }
+
             VK12.vkCmdPipelineBarrier(cb,
                     VK12.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                     VK12.VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK12.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK12.VK_PIPELINE_STAGE_HOST_BIT,
@@ -250,6 +342,7 @@ public class VulkanComputeCuller {
 
     public void free() {
         this.prepPipeline.free();
+        this.hizCullPipeline.free();
         this.cmdgenPipeline.free();
         this.prefixSumPipeline.free();
         this.buildTranslucentsPipeline.free();

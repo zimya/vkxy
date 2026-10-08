@@ -30,6 +30,18 @@ public class VulkanComputePipeline implements AutoCloseable {
         }
     }
 
+    public record ImageBinding(int binding, int type, long imageView, long sampler, int imageLayout) {
+        public static ImageBinding sampled(int binding, long imageView, long sampler) {
+            return new ImageBinding(binding, VK12.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageView, sampler, VK12.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+        public static ImageBinding sampled(int binding, long imageView, long sampler, int imageLayout) {
+            return new ImageBinding(binding, VK12.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, imageView, sampler, imageLayout);
+        }
+        public static ImageBinding storage(int binding, long imageView) {
+            return new ImageBinding(binding, VK12.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, imageView, 0L, VK12.VK_IMAGE_LAYOUT_GENERAL);
+        }
+    }
+
     private final long pipeline;
     private final long pipelineLayout;
     private final long descriptorSetLayout;
@@ -37,8 +49,12 @@ public class VulkanComputePipeline implements AutoCloseable {
     private boolean closed = false;
 
     public VulkanComputePipeline(VulkanBridge bridge, String name, String glslSource, java.util.Map<String, String> defines, int[] bindingIndices, int[] descriptorTypes) {
+        this(bridge, name, glslSource, defines, bindingIndices, descriptorTypes, 0);
+    }
+
+    public VulkanComputePipeline(VulkanBridge bridge, String name, String glslSource, java.util.Map<String, String> defines, int[] bindingIndices, int[] descriptorTypes, int pushConstantSize) {
         this(name, VulkanSpirvCompiler.compile(name, glslSource, VulkanSpirvCompiler.STAGE_COMPUTE, defines),
-                createBindingDescs(bindingIndices, descriptorTypes), 0);
+                createBindingDescs(bindingIndices, descriptorTypes), pushConstantSize);
     }
 
     private static List<BindingDesc> createBindingDescs(int[] bindingIndices, int[] descriptorTypes) {
@@ -160,6 +176,60 @@ public class VulkanComputePipeline implements AutoCloseable {
             bbs[i] = new BufferBinding(desc.binding(), desc.descriptorType(), buffers[i].vkBuffer(), 0, buffers[i].size());
         }
         pushBuffers(cb, bbs);
+    }
+
+    public void pushDescriptors(VkCommandBuffer cb, BufferBinding[] buffers, ImageBinding[] images) {
+        bind(cb);
+        int totalWrites = (buffers != null ? buffers.length : 0) + (images != null ? images.length : 0);
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            VkWriteDescriptorSet.Buffer writes = VkWriteDescriptorSet.calloc(totalWrites, stack);
+            int writeIdx = 0;
+            if (buffers != null) {
+                for (BufferBinding bb : buffers) {
+                    VkDescriptorBufferInfo.Buffer bufInfo = VkDescriptorBufferInfo.calloc(1, stack);
+                    bufInfo.buffer(bb.buffer());
+                    bufInfo.offset(bb.offset());
+                    bufInfo.range(bb.range());
+
+                    VkWriteDescriptorSet write = writes.get(writeIdx++).sType$Default();
+                    write.dstBinding(bb.binding());
+                    write.dstArrayElement(0);
+                    write.descriptorCount(1);
+                    write.descriptorType(bb.type());
+                    write.pBufferInfo(bufInfo);
+                }
+            }
+            if (images != null) {
+                for (ImageBinding ib : images) {
+                    VkDescriptorImageInfo.Buffer imgInfo = VkDescriptorImageInfo.calloc(1, stack);
+                    imgInfo.imageView(ib.imageView());
+                    imgInfo.sampler(ib.sampler());
+                    imgInfo.imageLayout(ib.imageLayout());
+
+                    VkWriteDescriptorSet write = writes.get(writeIdx++).sType$Default();
+                    write.dstBinding(ib.binding());
+                    write.dstArrayElement(0);
+                    write.descriptorCount(1);
+                    write.descriptorType(ib.type());
+                    write.pImageInfo(imgInfo);
+                }
+            }
+            KHRPushDescriptor.vkCmdPushDescriptorSetKHR(cb, VK12.VK_PIPELINE_BIND_POINT_COMPUTE, this.pipelineLayout, 0, writes);
+        }
+    }
+
+    public void pushConstants(VkCommandBuffer cb, int... ints) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            java.nio.IntBuffer buf = stack.ints(ints);
+            VK12.vkCmdPushConstants(cb, this.pipelineLayout, VK12.VK_SHADER_STAGE_COMPUTE_BIT, 0, buf);
+        }
+    }
+
+    public void pushConstants(VkCommandBuffer cb, float... floats) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            java.nio.FloatBuffer buf = stack.floats(floats);
+            VK12.vkCmdPushConstants(cb, this.pipelineLayout, VK12.VK_SHADER_STAGE_COMPUTE_BIT, 0, buf);
+        }
     }
 
     public void free() {

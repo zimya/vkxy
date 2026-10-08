@@ -107,5 +107,35 @@ public class VulkanShaderCompileTest {
         } catch (Exception e) {
             System.err.println("ssao_raster.frag failed: " + e.getMessage());
         }
+
+        System.out.println("Testing hiz_level0.comp...");
+        String hizLevel0Src = ShaderLoader.parse("voxy:vulkan/hiz/hiz_level0.comp");
+        try {
+            ByteBuffer spvHiz0 = VulkanSpirvCompiler.compile("hiz_level0.comp", hizLevel0Src, VulkanSpirvCompiler.STAGE_COMPUTE, Map.of());
+            System.out.println("hiz_level0.comp compiled successfully! Bytes: " + spvHiz0.remaining());
+        } catch (Exception e) {
+            System.err.println("hiz_level0.comp failed: " + e.getMessage());
+            e.printStackTrace();
+        }
+
+        System.out.println("Testing hiz_downsample.comp...");
+        String hizDownsampleSrc = ShaderLoader.parse("voxy:vulkan/hiz/hiz_downsample.comp");
+        try {
+            ByteBuffer spvHizDown = VulkanSpirvCompiler.compile("hiz_downsample.comp", hizDownsampleSrc, VulkanSpirvCompiler.STAGE_COMPUTE, Map.of());
+            System.out.println("hiz_downsample.comp compiled successfully! Bytes: " + spvHizDown.remaining());
+        } catch (Exception e) {
+            System.err.println("hiz_downsample.comp failed: " + e.getMessage());
+            e.printStackTrace();
+        }
+
+        System.out.println("Testing cull_hiz.comp...");
+        String cullHizSrc = ShaderLoader.parse("voxy:vulkan/cull/cull_hiz.comp");
+        try {
+            ByteBuffer spvCull = VulkanSpirvCompiler.compile("cull_hiz.comp", cullHizSrc, VulkanSpirvCompiler.STAGE_COMPUTE, Map.of());
+            System.out.println("cull_hiz.comp compiled successfully! Bytes: " + spvCull.remaining());
+        } catch (Exception e) {
+            System.err.println("cull_hiz.comp failed: " + e.getMessage());
+            e.printStackTrace();
+        }
     }
 }

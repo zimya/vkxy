@@ -1,0 +1,22 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0) uniform sampler2D depthSampler;
+layout(binding = 1, r32f) uniform writeonly image2D outHiz;
+
+layout(push_constant) uniform PushConstants {
+    ivec2 dstSize;
+};
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= dstSize.x || pos.y >= dstSize.y) return;
+
+    vec2 uv = (vec2(pos) + vec2(0.5)) / vec2(dstSize);
+    float dTex = texture(depthSampler, uv).r;
+    float dFetch = texelFetch(depthSampler, pos, 0).r;
+    float depth = max(dTex, dFetch);
+
+    imageStore(outHiz, pos, vec4(depth, 0.0, 0.0, 0.0));
+}

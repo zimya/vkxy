@@ -131,6 +131,8 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
 
         this.modelService.tick(100_000_000);
 
+        this.sectionRenderer.getHiZBuffer().updateCoarseDepthGrid();
+
         Minecraft client = Minecraft.getInstance();
         Camera camera = client.gameRenderer.mainCamera();
         if (camera == null) return;
@@ -368,6 +370,35 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
     }
 
     @Override
+    public void buildHiZPyramid() {
+        if (!VoxyConfig.CONFIG.enabled || !VoxyConfig.CONFIG.isRenderingEnabled()) return;
+
+        Minecraft mc = Minecraft.getInstance();
+        var mainTarget = mc.gameRenderer.mainRenderTarget();
+        if (mainTarget == null) return;
+
+        GpuTextureView depthView = mainTarget.getDepthTextureView();
+        if (depthView == null) return;
+
+        int width = mainTarget.width;
+        int height = mainTarget.height;
+        if (width <= 0 || height <= 0) return;
+
+        long vkDepthImage = this.bridge.getVkImage(depthView);
+        long vkDepthView = this.bridge.getVkImageView(depthView);
+        GpuSampler sampler = RenderSystem.getSamplerCache().getClampToEdge(com.mojang.renderpearl.api.textures.FilterMode.NEAREST);
+        long vkDepthSampler = this.bridge.getVkSampler(sampler);
+
+        VkCommandBuffer cb = this.bridge.allocateAndBeginCommandEncoderTransientBuffer();
+        try {
+            this.sectionRenderer.getHiZBuffer().build(cb, vkDepthImage, vkDepthView, vkDepthSampler, width, height);
+        } finally {
+            VK12.vkEndCommandBuffer(cb);
+            this.bridge.executeCommandBuffer(cb);
+        }
+    }
+
+    @Override
     public void setRenderDistance(float renderDistance) {
         this.renderDistanceTracker.setRenderDistance((int) Math.ceil(renderDistance + 1));
     }
@@ -379,6 +410,28 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
 
     @Override
     public void addDebugInfo(List<String> debug) {
+        float cullPct = this.sectionRenderer.getCullPercentage();
+        int culledQuads = this.sectionRenderer.getCulledQuads();
+        int totalQuads = this.sectionRenderer.getTotalQuads();
+        int culledSecs = this.sectionRenderer.getCulledSections();
+        int totalSecs = this.sectionRenderer.getTotalSections();
+
+        float[] grid = this.sectionRenderer.getHiZBuffer().getCoarseDepthGrid();
+        float minD = 1.0f, maxD = 0.0f;
+        int nonZero = 0;
+        if (grid != null) {
+            for (float d : grid) {
+                if (d > 0.0f) {
+                    minD = Math.min(minD, d);
+                    maxD = Math.max(maxD, d);
+                    nonZero++;
+                }
+            }
+        }
+        int totalGrid = grid != null ? grid.length : 0;
+
+        debug.add(String.format("Hi-Z Occlusion: %.1f%% culled (%d/%d quads, %d/%d secs, hizRange=[%.4f, %.4f], solid=%d/%d)",
+                cullPct, culledQuads, totalQuads, culledSecs, totalSecs, (nonZero > 0 ? minD : 0f), maxD, nonZero, totalGrid));
         debug.add("Voxy Vulkan: Vis=" + this.activeSectionIds.size() +
                 ", Culled=" + this.traverser.getLastCulledByVanillaCount() +
                 ", Top=" + this.nodeManager.getTopLevelNodeIds().size() +

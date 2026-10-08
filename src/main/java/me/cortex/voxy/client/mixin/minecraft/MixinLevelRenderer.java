@@ -137,6 +137,7 @@ public abstract class MixinLevelRenderer implements IVoxyRenderSystemHolder {
     @Inject(method = "executeOutline", at = @At("HEAD"))
     private void voxy$onExecuteOutline(FeatureRenderDispatcher.PreparedFrame featureFrame, CallbackInfo ci) {
         if (this.renderer != null) {
+            this.renderer.buildHiZPyramid();
             this.renderer.renderSSAO();
         }
     }

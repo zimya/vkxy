@@ -241,6 +241,10 @@ public final class VulkanBridge {
         this.getCommandEncoder().execute(commandBuffer);
     }
 
+    public VkCommandBuffer allocateAndBeginCommandEncoderTransientBuffer() {
+        return ((VulkanCommandEncoder) this.getCommandEncoder()).allocateAndBeginTransientCommandBuffer();
+    }
+
     public long getVkBuffer(GpuBuffer buffer) {
         if (buffer instanceof VulkanGpuBuffer vb) {
             return vb.vkBuffer();

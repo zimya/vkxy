@@ -1,0 +1,269 @@
+#version 450
+#extension GL_ARB_gpu_shader_int64 : enable
+
+layout(local_size_x = 128) in;
+
+#import <voxy:lod/section.glsl>
+
+layout(binding = 0, std140) uniform SceneUniform {
+    mat4 MVP;
+    ivec3 baseSectionPos;
+    uint frameId;
+    vec3 cameraSubPos;
+    float pad0;
+    vec4 fogColor;
+    vec4 fogParams;
+    vec4 fadeParams;
+    mat4 prevMVP;
+    ivec3 prevBaseSectionPos;
+    uint isCameraMoving;
+    vec3 prevCameraSubPos;
+    float pad1;
+};
+
+layout(binding = 1, std430) readonly restrict buffer SectionBuffer {
+    SectionMeta sectionData[];
+};
+
+layout(binding = 2, std430) readonly restrict buffer IndirectLookupBuffer {
+    uint activeSectionCount;
+    uint indirectLookup[];
+};
+
+layout(binding = 3, std430) restrict buffer VisibilityBuffer {
+    uint visibilityData[];
+};
+
+layout(binding = 4, std430) restrict buffer StatisticsBuffer {
+    uint totalQuads;
+    uint visibleQuads;
+    uint culledQuads;
+    uint totalSections;
+    uint visibleSections;
+    uint culledSections;
+};
+
+layout(binding = 5) uniform sampler2D hizDepthSampler;
+
+layout(push_constant) uniform PushConstants {
+    uint count;
+    uint hizWidth;
+    uint hizHeight;
+    uint hizLevels;
+    uint isHiZReady;
+};
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    if (idx >= count) {
+        return;
+    }
+    uint sid = indirectLookup[idx];
+    SectionMeta section = sectionData[sid];
+
+    // Compute total quads of this section
+    uvec4 counts = section.b;
+    uint sectionQuads = (counts.x & 0xFFFFu) + (counts.x >> 16u) +
+                        (counts.y & 0xFFFFu) + (counts.y >> 16u) +
+                        (counts.z & 0xFFFFu) + (counts.z >> 16u) +
+                        (counts.w & 0xFFFFu) + (counts.w >> 16u);
+
+    atomicAdd(totalQuads, sectionQuads);
+    atomicAdd(totalSections, 1);
+
+    uint previous = visibilityData[sid] & 0x7fffffffu;
+    bool wasVisibleLastFrame = (previous == (frameId - 1u));
+
+    // If Hi-Z is not ready yet (e.g. first frame), consider everything visible
+    if (isHiZReady == 0u) {
+        visibilityData[sid] = (frameId & 0x7fffffffu) | (uint(wasVisibleLastFrame) << 31u);
+        atomicAdd(visibleQuads, sectionQuads);
+        atomicAdd(visibleSections, 1);
+        return;
+    }
+
+    uint detail = extractDetail(section);
+    ivec3 ipos = extractPosition(section);
+    ivec3 aabbOffset = extractAABBOffset(section);
+    ivec3 size = extractAABBSize(section);
+
+    vec3 basePos = vec3(((ipos << detail) - baseSectionPos) << 5);
+
+    const float EXPANSION = 1.0;
+    vec3 minOffset = (vec3(aabbOffset) - EXPANSION) * float(1 << detail);
+    vec3 maxOffset = (vec3(aabbOffset + size) + EXPANSION) * float(1 << detail);
+
+    vec3 camRelMin = basePos + minOffset - cameraSubPos;
+    vec3 camRelMax = basePos + maxOffset - cameraSubPos;
+
+    // Check if camera is inside bounding box
+    if (all(lessThanEqual(camRelMin, vec3(0.0))) && all(greaterThanEqual(camRelMax, vec3(0.0)))) {
+        visibilityData[sid] = (frameId & 0x7fffffffu) | (uint(wasVisibleLastFrame) << 31u);
+        atomicAdd(visibleQuads, sectionQuads);
+        atomicAdd(visibleSections, 1);
+        return;
+    }
+
+    vec3 bMin = basePos + minOffset;
+    vec3 bMax = basePos + maxOffset;
+
+    vec4 P[8];
+    P[0] = MVP * vec4(bMin.x, bMin.y, bMin.z, 1.0);
+    P[1] = MVP * vec4(bMax.x, bMin.y, bMin.z, 1.0);
+    P[2] = MVP * vec4(bMin.x, bMax.y, bMin.z, 1.0);
+    P[3] = MVP * vec4(bMax.x, bMax.y, bMin.z, 1.0);
+    P[4] = MVP * vec4(bMin.x, bMin.y, bMax.z, 1.0);
+    P[5] = MVP * vec4(bMax.x, bMin.y, bMax.z, 1.0);
+    P[6] = MVP * vec4(bMin.x, bMax.y, bMax.z, 1.0);
+    P[7] = MVP * vec4(bMax.x, bMax.y, bMax.z, 1.0);
+
+    // If any point is near or behind the near plane, don't cull
+    bool nearClip = false;
+    for (int i = 0; i < 8; i++) {
+        if (P[i].w <= 0.05) {
+            nearClip = true;
+            break;
+        }
+    }
+    if (nearClip) {
+        visibilityData[sid] = (frameId & 0x7fffffffu) | (uint(wasVisibleLastFrame) << 31u);
+        atomicAdd(visibleQuads, sectionQuads);
+        atomicAdd(visibleSections, 1);
+        return;
+    }
+
+    vec3 screen[8];
+    for (int i = 0; i < 8; i++) {
+        vec3 ndc = P[i].xyz / P[i].w;
+        screen[i] = vec3(ndc.xy * 0.5 + 0.5, ndc.z);
+    }
+
+    vec3 minBB = screen[0];
+    vec3 maxBB = screen[0];
+    for (int i = 1; i < 8; i++) {
+        minBB = min(minBB, screen[i]);
+        maxBB = max(maxBB, screen[i]);
+    }
+
+    if (maxBB.x < 0.0 || minBB.x > 1.0 || maxBB.y < 0.0 || minBB.y > 1.0) {
+        // Frustum culled
+        visibilityData[sid] = previous & 0x7fffffffu;
+        atomicAdd(culledQuads, sectionQuads);
+        atomicAdd(culledSections, 1);
+        return;
+    }
+
+    // 2. Temporal Occlusion Culling against Previous Frame Hi-Z
+    // If the camera is rotating, moving or zooming, immediately protect sections that were not visible last frame
+    // from being falsely culled before their new position can be rendered into the depth buffer.
+    if (isCameraMoving != 0u && !wasVisibleLastFrame) {
+        visibilityData[sid] = (frameId & 0x7fffffffu) | (uint(wasVisibleLastFrame) << 31u);
+        atomicAdd(visibleQuads, sectionQuads);
+        atomicAdd(visibleSections, 1);
+        return;
+    }
+
+    // Project using previous frame's MVP into previous frame's Hi-Z depth buffer
+    vec3 prevBasePos = vec3(((ipos << detail) - prevBaseSectionPos) << 5);
+    vec3 prevBMin = prevBasePos + minOffset;
+    vec3 prevBMax = prevBasePos + maxOffset;
+
+    vec4 prevP[8];
+    prevP[0] = prevMVP * vec4(prevBMin.x, prevBMin.y, prevBMin.z, 1.0);
+    prevP[1] = prevMVP * vec4(prevBMax.x, prevBMin.y, prevBMin.z, 1.0);
+    prevP[2] = prevMVP * vec4(prevBMin.x, prevBMax.y, prevBMin.z, 1.0);
+    prevP[3] = prevMVP * vec4(prevBMax.x, prevBMax.y, prevBMin.z, 1.0);
+    prevP[4] = prevMVP * vec4(prevBMin.x, prevBMin.y, prevBMax.z, 1.0);
+    prevP[5] = prevMVP * vec4(prevBMax.x, prevBMin.y, prevBMax.z, 1.0);
+    prevP[6] = prevMVP * vec4(prevBMin.x, prevBMax.y, prevBMax.z, 1.0);
+    prevP[7] = prevMVP * vec4(prevBMax.x, prevBMax.y, prevBMax.z, 1.0);
+
+    bool prevNearClip = false;
+    for (int i = 0; i < 8; i++) {
+        if (prevP[i].w <= 0.05) {
+            prevNearClip = true;
+            break;
+        }
+    }
+    // If it was near-clipped or behind camera in previous frame, cannot cull
+    if (prevNearClip) {
+        visibilityData[sid] = (frameId & 0x7fffffffu) | (uint(wasVisibleLastFrame) << 31u);
+        atomicAdd(visibleQuads, sectionQuads);
+        atomicAdd(visibleSections, 1);
+        return;
+    }
+
+    vec3 prevScreen[8];
+    for (int i = 0; i < 8; i++) {
+        vec3 ndc = prevP[i].xyz / prevP[i].w;
+        prevScreen[i] = vec3(ndc.xy * 0.5 + 0.5, ndc.z);
+    }
+
+    vec3 minBB_prev = prevScreen[0];
+    vec3 maxBB_prev = prevScreen[0];
+    for (int i = 1; i < 8; i++) {
+        minBB_prev = min(minBB_prev, prevScreen[i]);
+        maxBB_prev = max(maxBB_prev, prevScreen[i]);
+    }
+
+    // If it was even partially off-screen in the previous frame (e.g. rotated into view),
+    // last frame's Hi-Z depth buffer has incomplete/missing occluder data for it -> MUST RENDER
+    if (minBB_prev.x < 0.0 || maxBB_prev.x > 1.0 || minBB_prev.y < 0.0 || maxBB_prev.y > 1.0) {
+        visibilityData[sid] = (frameId & 0x7fffffffu) | (uint(wasVisibleLastFrame) << 31u);
+        atomicAdd(visibleQuads, sectionQuads);
+        atomicAdd(visibleSections, 1);
+        return;
+    }
+
+    minBB_prev.xy = clamp(minBB_prev.xy, vec2(0.0), vec2(1.0));
+    maxBB_prev.xy = clamp(maxBB_prev.xy, vec2(0.0), vec2(1.0));
+
+    // Screen footprint in Hi-Z level 0 pixels (in previous frame's depth buffer)
+    vec2 boxPixels = (maxBB_prev.xy - minBB_prev.xy) * vec2(float(hizWidth), float(hizHeight));
+    float maxDim = max(max(boxPixels.x, boxPixels.y), 1.0);
+
+    // Mip selection matching voxy: floor(log2(maxDim)) - 1
+    float mip = floor(log2(maxDim)) - 1.0;
+    mip = clamp(mip, 0.0, float(hizLevels - 1));
+    int ml = int(mip);
+
+    ivec2 mipSize = max(ivec2(1), ivec2(hizWidth >> ml, hizHeight >> ml));
+    ivec2 mnbb = clamp(ivec2(floor(minBB_prev.xy * vec2(mipSize))), ivec2(0), mipSize - 1);
+    ivec2 mxbb = clamp(ivec2(floor(maxBB_prev.xy * vec2(mipSize))), mnbb, mipSize - 1);
+
+    // If footprint spans too many texels at this mip level, conservatively don't cull
+    if ((mxbb.x - mnbb.x) > 8 || (mxbb.y - mnbb.y) > 8) {
+        visibilityData[sid] = (frameId & 0x7fffffffu) | (uint(wasVisibleLastFrame) << 31u);
+        atomicAdd(visibleQuads, sectionQuads);
+        atomicAdd(visibleSections, 1);
+        return;
+    }
+
+    // Conservative occluder depth (furthest occluder in footprint = min in Reverse-Z)
+    float occluderDepth = 1.0;
+    bool hasSamples = false;
+    for (int x = mnbb.x; x <= mxbb.x; x++) {
+        for (int y = mnbb.y; y <= mxbb.y; y++) {
+            float d = texelFetch(hizDepthSampler, ivec2(x, y), ml).r;
+            occluderDepth = min(occluderDepth, d);
+            hasSamples = true;
+        }
+    }
+
+    // In Reverse-Z:
+    // occluderDepth is from previous frame.
+    // maxBB_prev.z is the closest point of the section in previous frame.
+    // A small conservative margin prevents self-occlusion precision issues and disocclusion popping.
+    float margin = (isCameraMoving != 0u) ? 0.0001 : 0.000005;
+    bool isOccluded = hasSamples && (occluderDepth > maxBB_prev.z + margin);
+
+    if (!isOccluded) {
+        visibilityData[sid] = (frameId & 0x7fffffffu) | (uint(wasVisibleLastFrame) << 31u);
+        atomicAdd(visibleQuads, sectionQuads);
+        atomicAdd(visibleSections, 1);
+    } else {
+        visibilityData[sid] = previous & 0x7fffffffu;
+        atomicAdd(culledQuads, sectionQuads);
+        atomicAdd(culledSections, 1);
+    }
+}

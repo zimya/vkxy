@@ -26,6 +26,16 @@ public class VulkanSectionRenderer {
     private final VulkanBuffer indirectLookupBuffer;
     private final VulkanBuffer positionScratchBuffer;
     private final VulkanBuffer distanceCountBuffer;
+    private final VulkanHiZBuffer hiZBuffer;
+    private final VulkanBuffer statisticsBuffer;
+
+    private int totalQuads = 0;
+    private int visibleQuads = 0;
+    private int culledQuads = 0;
+    private int totalSections = 0;
+    private int visibleSections = 0;
+    private int culledSections = 0;
+    private float cullPercentage = 0.0f;
 
     public VulkanSectionRenderer(VulkanBridge bridge,
                                  VulkanModelStore modelStore,
@@ -40,6 +50,7 @@ public class VulkanSectionRenderer {
         this.culler = new VulkanComputeCuller(bridge);
         this.indexBuffer = VulkanIndexBuffer.getInstance(bridge);
         this.viewport = new VulkanViewport(bridge);
+        this.hiZBuffer = new VulkanHiZBuffer(bridge);
 
         int maxSections = geometryData.getMaxSectionCount();
 
@@ -60,7 +71,10 @@ public class VulkanSectionRenderer {
         this.distanceCountBuffer = VulkanBuffer.createDeviceStorage(bridge, 1024L * 4 + (long) TRANSLUCENT_DRAW_COUNT * 4,
                 VK12.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
 
-        Logger.info("VulkanSectionRenderer initialized successfully");
+        this.statisticsBuffer = VulkanBuffer.createHostVisible(bridge, 256,
+                VK12.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK12.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+
+        Logger.info("VulkanSectionRenderer initialized successfully with Hi-Z Occlusion Culling");
     }
 
     public VulkanViewport getViewport() {
@@ -80,14 +94,7 @@ public class VulkanSectionRenderer {
             org.lwjgl.system.MemoryUtil.memPutInt(ptr, activeSectionIds[i]);
             ptr += 4;
         }
-
-        // Set visibility data to current frameId so cmdgen renders all active sections
-        int frameId = this.viewport.frameId;
-        long visPtr = this.visibilityBuffer.map();
-        for (int i = 0; i < count; i++) {
-            int secId = activeSectionIds[i];
-            org.lwjgl.system.MemoryUtil.memPutInt(visPtr + (long) secId * 4L, frameId);
-        }
+        // Visibility is governed by cull_hiz.comp on the GPU
     }
 
     private int currentOpaqueDrawCount = 0;
@@ -110,7 +117,9 @@ public class VulkanSectionRenderer {
                     this.visibilityBuffer,
                     this.indirectLookupBuffer,
                     this.positionScratchBuffer,
-                    this.distanceCountBuffer
+                    this.distanceCountBuffer,
+                    this.hiZBuffer,
+                    this.statisticsBuffer
             );
         } finally {
             this.bridge.endAndSubmitTransientCommandBuffer(cb);
@@ -123,11 +132,61 @@ public class VulkanSectionRenderer {
         this.currentOpaqueDrawCount = Math.max(0, Math.min(actualOpaqueDrawCount, OPAQUE_DRAW_COUNT));
         int actualTranslucentDrawCount = org.lwjgl.system.MemoryUtil.memGetInt(ptr + 16);
         this.currentTranslucentDrawCount = Math.max(0, Math.min(actualTranslucentDrawCount, TRANSLUCENT_DRAW_COUNT));
+
+        // Read back occlusion culling statistics
+        this.statisticsBuffer.invalidate(0, 24);
+        long sPtr = this.statisticsBuffer.map();
+        this.totalQuads = org.lwjgl.system.MemoryUtil.memGetInt(sPtr);
+        this.visibleQuads = org.lwjgl.system.MemoryUtil.memGetInt(sPtr + 4);
+        this.culledQuads = org.lwjgl.system.MemoryUtil.memGetInt(sPtr + 8);
+        this.totalSections = org.lwjgl.system.MemoryUtil.memGetInt(sPtr + 12);
+        this.visibleSections = org.lwjgl.system.MemoryUtil.memGetInt(sPtr + 16);
+        this.culledSections = org.lwjgl.system.MemoryUtil.memGetInt(sPtr + 20);
+        this.cullPercentage = this.totalQuads > 0 ? (100.0f * (float) this.culledQuads / (float) this.totalQuads) : 0.0f;
     }
 
     public void clearDrawCalls() {
         this.currentOpaqueDrawCount = 0;
         this.currentTranslucentDrawCount = 0;
+        this.totalQuads = 0;
+        this.visibleQuads = 0;
+        this.culledQuads = 0;
+        this.totalSections = 0;
+        this.visibleSections = 0;
+        this.culledSections = 0;
+        this.cullPercentage = 0.0f;
+    }
+
+    public VulkanHiZBuffer getHiZBuffer() {
+        return this.hiZBuffer;
+    }
+
+    public int getTotalQuads() {
+        return this.totalQuads;
+    }
+
+    public int getVisibleQuads() {
+        return this.visibleQuads;
+    }
+
+    public int getCulledQuads() {
+        return this.culledQuads;
+    }
+
+    public int getTotalSections() {
+        return this.totalSections;
+    }
+
+    public int getVisibleSections() {
+        return this.visibleSections;
+    }
+
+    public int getCulledSections() {
+        return this.culledSections;
+    }
+
+    public float getCullPercentage() {
+        return this.cullPercentage;
     }
 
     public void renderOpaque(VkCommandBuffer cb, long lightmapView, long lightmapSampler, int sectionCount) {
@@ -178,6 +237,8 @@ public class VulkanSectionRenderer {
         this.terrainPipeline.free();
         this.culler.free();
         this.viewport.free();
+        this.hiZBuffer.free();
+        this.statisticsBuffer.free();
         this.drawCallBuffer.free();
         this.drawCountCallBuffer.free();
         this.visibilityBuffer.free();
