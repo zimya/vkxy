@@ -55,7 +55,6 @@ public class VulkanOctreeTraverser {
         float m11 = Math.abs(projMatrix.m11());
         float baseFovM11 = 1.37f;
         float zoomRatio = Math.max(1.0f, m11 / baseFovM11);
-        double zoomScale = Math.sqrt(zoomRatio);
 
         float subDivSize = Math.max(16.0f, VoxyConfig.CONFIG.subDivisionSize);
         float focalLength = (viewportHeight * m11) * 0.5f;
@@ -121,14 +120,14 @@ public class VulkanOctreeTraverser {
             if (shouldDescend) {
                 double maxLODDist;
                 switch (lvl) {
-                    case 1: // Subdividing lvl 1 into lvl 0 (16-block detail)
-                        maxLODDist = Math.min(1792.0, 384.0 * zoomScale);
+                    case 1: // Subdividing lvl 1 into lvl 0 (native 1x1 block detail)
+                        maxLODDist = Math.min(maxDistBlocks, 384.0 * zoomRatio);
                         break;
-                    case 2: // Subdividing lvl 2 into lvl 1 (32-block detail)
-                        maxLODDist = Math.min(3584.0, 896.0 * zoomScale);
+                    case 2: // Subdividing lvl 2 into lvl 1 (2x2 block detail)
+                        maxLODDist = Math.min(maxDistBlocks, 896.0 * zoomRatio);
                         break;
-                    case 3: // Subdividing lvl 3 into lvl 2 (64-block detail)
-                        maxLODDist = Math.min(6144.0, 1792.0 * zoomScale);
+                    case 3: // Subdividing lvl 3 into lvl 2 (4x4 block detail)
+                        maxLODDist = Math.min(maxDistBlocks, 1792.0 * zoomRatio);
                         break;
                     default: // Level 4 or higher
                         maxLODDist = maxDistBlocks;
