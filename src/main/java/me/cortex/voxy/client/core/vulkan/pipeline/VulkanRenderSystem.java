@@ -340,6 +340,7 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
     @Override
     public void addDebugInfo(List<String> debug) {
         debug.add("Voxy Vulkan: Vis=" + this.activeSectionIds.size() +
+                ", Culled=" + this.traverser.getLastCulledByVanillaCount() +
                 ", Top=" + this.nodeManager.getTopLevelNodeIds().size() +
                 ", Geo=" + this.geometryManager.getSectionCount() +
                 ", VRAM=" + (this.geometryManager.getAllocatedBytes() / (1024 * 1024)) + "/" +
