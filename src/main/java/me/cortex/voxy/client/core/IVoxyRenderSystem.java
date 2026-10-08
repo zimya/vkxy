@@ -16,6 +16,7 @@ public interface IVoxyRenderSystem {
 
     default void renderOpaque(RenderPass renderPass) {}
     default void renderTranslucent(RenderPass renderPass) {}
+    default void renderSSAO() {}
     default void onFrameStart() {}
 
     default Viewport<?> getViewport() {

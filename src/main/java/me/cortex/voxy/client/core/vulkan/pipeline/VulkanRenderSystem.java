@@ -2,6 +2,7 @@ package me.cortex.voxy.client.core.vulkan.pipeline;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.renderpearl.api.commands.RenderPass;
+import com.mojang.renderpearl.api.commands.RenderPassDescriptor;
 import com.mojang.renderpearl.api.textures.GpuSampler;
 import com.mojang.renderpearl.api.textures.GpuTextureView;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
@@ -39,6 +40,7 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
     private final VulkanSectionGeometryData geometryData;
     private final VulkanGeometryManager geometryManager;
     private final VulkanSectionRenderer sectionRenderer;
+    private final VulkanSSAO ssao;
     private final SectionUpdateRouter router;
     private final NodeManager nodeManager;
     private final VulkanOctreeTraverser traverser;
@@ -67,6 +69,7 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
         // VK_FORMAT_R8G8B8A8_UNORM (37), VK_FORMAT_D32_SFLOAT (126)
         this.sectionRenderer = new VulkanSectionRenderer(this.bridge, this.modelStore, this.geometryData,
                 VK12.VK_FORMAT_R8G8B8A8_UNORM, VK12.VK_FORMAT_D32_SFLOAT);
+        this.ssao = new VulkanSSAO(this.bridge, VK12.VK_FORMAT_R8G8B8A8_UNORM);
 
         this.modelService = new ModelBakerySubsystem(world.getMapper(), this.modelStore);
         this.renderGen = new RenderGenerationService(world, this.modelService, sm, false);
@@ -328,6 +331,43 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
     }
 
     @Override
+    public void renderSSAO() {
+        if (!VoxyConfig.CONFIG.enabled || !VoxyConfig.CONFIG.isRenderingEnabled()) return;
+
+        Minecraft mc = Minecraft.getInstance();
+        var mainTarget = mc.gameRenderer.mainRenderTarget();
+        if (mainTarget == null) return;
+
+        GpuTextureView colorView = mainTarget.getColorTextureView();
+        GpuTextureView depthView = mainTarget.getDepthTextureView();
+        if (colorView == null || depthView == null) return;
+
+        var gameRenderState = mc.gameRenderer.gameRenderState();
+        if (gameRenderState == null || gameRenderState.levelRenderState == null ||
+                gameRenderState.levelRenderState.cameraRenderState == null) return;
+
+        var rawMCProj = gameRenderState.levelRenderState.cameraRenderState.projectionMatrix;
+        if (rawMCProj == null) return;
+
+        int width = mainTarget.width;
+        int height = mainTarget.height;
+
+        RenderPassDescriptor descriptor = RenderPassDescriptor.builder(() -> "Voxy SSAO")
+                .withColorAttachment(colorView)
+                .build();
+
+        try (RenderPass renderPass = RenderSystem.getDevice().createCommandEncoder().createRenderPass(descriptor)) {
+            VkCommandBuffer cb = this.bridge.getRenderPassCommandBuffer(renderPass);
+            long vkDepthView = this.bridge.getVkImageView(depthView);
+            GpuSampler sampler = RenderSystem.getSamplerCache().getClampToEdge(com.mojang.renderpearl.api.textures.FilterMode.NEAREST);
+            long vkDepthSampler = this.bridge.getVkSampler(sampler);
+
+            float vanillaRd = mc.options != null ? mc.options.getEffectiveRenderDistance() * 16.0f : 192.0f;
+            this.ssao.render(cb, vkDepthView, vkDepthSampler, rawMCProj, width, height, vanillaRd);
+        }
+    }
+
+    @Override
     public void setRenderDistance(float renderDistance) {
         this.renderDistanceTracker.setRenderDistance((int) Math.ceil(renderDistance + 1));
     }
@@ -344,7 +384,8 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
                 ", Top=" + this.nodeManager.getTopLevelNodeIds().size() +
                 ", Geo=" + this.geometryManager.getSectionCount() +
                 ", VRAM=" + (this.geometryManager.getAllocatedBytes() / (1024 * 1024)) + "/" +
-                (this.geometryManager.getCapacityBytes() / (1024 * 1024)) + "MB");
+                (this.geometryManager.getCapacityBytes() / (1024 * 1024)) + "MB" +
+                ", SSAO=" + VoxyConfig.CONFIG.getSSAOMode().name().toLowerCase());
         this.modelService.addDebugData(debug);
         this.nodeManager.addDebug(debug);
     }
@@ -358,6 +399,7 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
         this.renderGen.shutdown();
         this.modelService.shutdown();
         this.sectionRenderer.free();
+        this.ssao.free();
         this.geometryManager.free();
         this.geometryData.free();
         this.modelStore.free();

@@ -89,5 +89,23 @@ public class VulkanShaderCompileTest {
         } catch (Exception e) {
             System.err.println("buildtranslucents.comp failed: " + e.getMessage());
         }
+
+        System.out.println("Testing ssao_fullscreen.vert...");
+        String ssaoVertSrc = ShaderLoader.parse("voxy:post/ssao_fullscreen.vert");
+        try {
+            ByteBuffer spvSsaoVert = VulkanSpirvCompiler.compile("ssao_fullscreen.vert", ssaoVertSrc, VulkanSpirvCompiler.STAGE_VERTEX, Map.of());
+            System.out.println("ssao_fullscreen.vert compiled successfully! Bytes: " + spvSsaoVert.remaining());
+        } catch (Exception e) {
+            System.err.println("ssao_fullscreen.vert failed: " + e.getMessage());
+        }
+
+        System.out.println("Testing ssao_raster.frag...");
+        String ssaoFragSrc = ShaderLoader.parse("voxy:post/ssao_raster.frag");
+        try {
+            ByteBuffer spvSsaoFrag = VulkanSpirvCompiler.compile("ssao_raster.frag", ssaoFragSrc, VulkanSpirvCompiler.STAGE_FRAGMENT, Map.of());
+            System.out.println("ssao_raster.frag compiled successfully! Bytes: " + spvSsaoFrag.remaining());
+        } catch (Exception e) {
+            System.err.println("ssao_raster.frag failed: " + e.getMessage());
+        }
     }
 }
