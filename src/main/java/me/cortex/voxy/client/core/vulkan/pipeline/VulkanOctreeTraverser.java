@@ -372,7 +372,13 @@ public class VulkanOctreeTraverser {
                     if (childPtr != -1) {
                         int childCount = nodeData.getChildPtrCount(nodeId);
                         for (int c = 0; c < childCount; c++) {
-                            this.queue.add(childPtr + c);
+                            int cNodeId = childPtr + c;
+                            if (nodeData.nodeExists(cNodeId)) {
+                                int cMesh = nodeData.getNodeGeometry(cNodeId);
+                                if (cMesh >= 1) {
+                                    outVisibleSections.add(cMesh);
+                                }
+                            }
                         }
                     }
                 }

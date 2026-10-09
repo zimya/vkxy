@@ -19,15 +19,46 @@ public class VulkanSectionRenderer {
     private final VulkanModelStore modelStore;
     private final VulkanSectionGeometryData geometryData;
 
-    // Viewport buffers
-    private final VulkanBuffer drawCallBuffer;
-    private final VulkanBuffer drawCountCallBuffer;
+    public static final int FRAMES_IN_FLIGHT = VulkanBridge.FRAMES_IN_FLIGHT;
+
+    public static class FrameData {
+        final VulkanBuffer drawCallBuffer;
+        final VulkanBuffer drawCountCallBuffer;
+        final VulkanBuffer indirectLookupBuffer;
+        final VulkanBuffer positionScratchBuffer;
+        final VulkanBuffer distanceCountBuffer;
+        final VulkanBuffer statisticsBuffer;
+        int maxOpaqueDrawCount = 0;
+        int maxTranslucentDrawCount = 0;
+        int sectionCount = 0;
+
+        FrameData(VulkanBridge bridge, int maxSections) {
+            this.drawCallBuffer = VulkanBuffer.createDeviceStorage(bridge, (long) TOTAL_DRAW_COUNT * 20,
+                    VK12.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK12.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            this.drawCountCallBuffer = VulkanBuffer.createHostVisible(bridge, 256,
+                    VK12.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK12.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+            this.indirectLookupBuffer = VulkanBuffer.createHostVisible(bridge, (long) maxSections * 4 + 4, 0);
+            this.positionScratchBuffer = VulkanBuffer.createDeviceStorage(bridge, (long) maxSections * 8, 0);
+            this.distanceCountBuffer = VulkanBuffer.createDeviceStorage(bridge, 1024L * 4 + (long) TRANSLUCENT_DRAW_COUNT * 4,
+                    VK12.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            this.statisticsBuffer = VulkanBuffer.createHostVisible(bridge, 256,
+                    VK12.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK12.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        }
+
+        void free() {
+            this.drawCallBuffer.free();
+            this.drawCountCallBuffer.free();
+            this.indirectLookupBuffer.free();
+            this.positionScratchBuffer.free();
+            this.distanceCountBuffer.free();
+            this.statisticsBuffer.free();
+        }
+    }
+
+    private final FrameData[] frames = new FrameData[FRAMES_IN_FLIGHT];
+    private int frameIndex = 0;
     private final VulkanBuffer visibilityBuffer;
-    private final VulkanBuffer indirectLookupBuffer;
-    private final VulkanBuffer positionScratchBuffer;
-    private final VulkanBuffer distanceCountBuffer;
     private final VulkanHiZBuffer hiZBuffer;
-    private final VulkanBuffer statisticsBuffer;
 
     private int totalQuads = 0;
     private int visibleQuads = 0;
@@ -54,27 +85,13 @@ public class VulkanSectionRenderer {
 
         int maxSections = geometryData.getMaxSectionCount();
 
-        // 20 bytes per VkDrawIndexedIndirectCommand
-        this.drawCallBuffer = VulkanBuffer.createDeviceStorage(bridge, (long) TOTAL_DRAW_COUNT * 20,
-                VK12.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK12.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-
-        // Host visible so CPU can read exact opaqueDrawCount after dispatch
-        this.drawCountCallBuffer = VulkanBuffer.createHostVisible(bridge, 256,
-                VK12.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK12.VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
+        for (int i = 0; i < FRAMES_IN_FLIGHT; i++) {
+            this.frames[i] = new FrameData(bridge, maxSections);
+        }
 
         this.visibilityBuffer = VulkanBuffer.createHostVisible(bridge, (long) maxSections * 4, 0);
 
-        this.indirectLookupBuffer = VulkanBuffer.createHostVisible(bridge, (long) maxSections * 4 + 4, 0);
-
-        this.positionScratchBuffer = VulkanBuffer.createDeviceStorage(bridge, (long) maxSections * 8, 0);
-
-        this.distanceCountBuffer = VulkanBuffer.createDeviceStorage(bridge, 1024L * 4 + (long) TRANSLUCENT_DRAW_COUNT * 4,
-                VK12.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-
-        this.statisticsBuffer = VulkanBuffer.createHostVisible(bridge, 256,
-                VK12.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK12.VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-
-        Logger.info("VulkanSectionRenderer initialized successfully with Hi-Z Occlusion Culling");
+        Logger.info("VulkanSectionRenderer initialized successfully with double-buffered asynchronous Hi-Z Occlusion Culling");
     }
 
     public VulkanViewport getViewport() {
@@ -86,56 +103,54 @@ public class VulkanSectionRenderer {
     }
 
     public void updateVisibleSections(int[] activeSectionIds, int count) {
-        // Update indirect lookup buffer with active section IDs
-        long ptr = this.indirectLookupBuffer.map();
+        this.frameIndex = (this.frameIndex + 1) % FRAMES_IN_FLIGHT;
+        FrameData frame = this.frames[this.frameIndex];
+        frame.sectionCount = count;
+
+        // Update indirect lookup buffer for current frame with active section IDs
+        long ptr = frame.indirectLookupBuffer.map();
         org.lwjgl.system.MemoryUtil.memPutInt(ptr, count);
         ptr += 4;
         for (int i = 0; i < count; i++) {
             org.lwjgl.system.MemoryUtil.memPutInt(ptr, activeSectionIds[i]);
             ptr += 4;
         }
-        // Visibility is governed by cull_hiz.comp on the GPU
     }
 
-    private int currentOpaqueDrawCount = 0;
-    private int currentTranslucentDrawCount = 0;
-
     public void buildDrawCalls(int sectionCount) {
+        FrameData frame = this.frames[this.frameIndex];
         if (sectionCount <= 0) {
-            this.currentOpaqueDrawCount = 0;
-            this.currentTranslucentDrawCount = 0;
+            frame.maxOpaqueDrawCount = 0;
+            frame.maxTranslucentDrawCount = 0;
             return;
         }
 
-        VkCommandBuffer cb = this.bridge.beginTransientCommandBuffer();
+        // Compute maximum potential indirect draws for current active sections
+        frame.maxOpaqueDrawCount = Math.min(sectionCount * 7, OPAQUE_DRAW_COUNT);
+        frame.maxTranslucentDrawCount = Math.min(sectionCount, TRANSLUCENT_DRAW_COUNT);
+
+        VkCommandBuffer cb = this.bridge.beginTransientCommandBuffer(this.frameIndex);
         try {
             this.culler.dispatchCulling(cb, sectionCount,
                     this.viewport.getUniformBuffer(),
-                    this.drawCallBuffer,
-                    this.drawCountCallBuffer,
+                    frame.drawCallBuffer,
+                    frame.drawCountCallBuffer,
                     this.geometryData.getMetadataBuffer(),
                     this.visibilityBuffer,
-                    this.indirectLookupBuffer,
-                    this.positionScratchBuffer,
-                    this.distanceCountBuffer,
+                    frame.indirectLookupBuffer,
+                    frame.positionScratchBuffer,
+                    frame.distanceCountBuffer,
                     this.hiZBuffer,
-                    this.statisticsBuffer
+                    frame.statisticsBuffer
             );
         } finally {
-            this.bridge.endAndSubmitTransientCommandBuffer(cb);
+            this.bridge.endAndSubmitTransientCommandBuffer(cb, this.frameIndex);
         }
 
-        // Invalidate host cache for drawCountCallBuffer and read exact opaque & translucent draw counts
-        this.drawCountCallBuffer.invalidate(0, 64);
-        long ptr = this.drawCountCallBuffer.map();
-        int actualOpaqueDrawCount = org.lwjgl.system.MemoryUtil.memGetInt(ptr + 12);
-        this.currentOpaqueDrawCount = Math.max(0, Math.min(actualOpaqueDrawCount, OPAQUE_DRAW_COUNT));
-        int actualTranslucentDrawCount = org.lwjgl.system.MemoryUtil.memGetInt(ptr + 16);
-        this.currentTranslucentDrawCount = Math.max(0, Math.min(actualTranslucentDrawCount, TRANSLUCENT_DRAW_COUNT));
-
-        // Read back occlusion culling statistics
-        this.statisticsBuffer.invalidate(0, 24);
-        long sPtr = this.statisticsBuffer.map();
+        // Asynchronously read back statistics from the PREVIOUS frame (which has finished GPU work)
+        FrameData prevFrame = this.frames[(this.frameIndex + 1) % FRAMES_IN_FLIGHT];
+        prevFrame.statisticsBuffer.invalidate(0, 24);
+        long sPtr = prevFrame.statisticsBuffer.map();
         this.totalQuads = org.lwjgl.system.MemoryUtil.memGetInt(sPtr);
         this.visibleQuads = org.lwjgl.system.MemoryUtil.memGetInt(sPtr + 4);
         this.culledQuads = org.lwjgl.system.MemoryUtil.memGetInt(sPtr + 8);
@@ -146,8 +161,10 @@ public class VulkanSectionRenderer {
     }
 
     public void clearDrawCalls() {
-        this.currentOpaqueDrawCount = 0;
-        this.currentTranslucentDrawCount = 0;
+        FrameData frame = this.frames[this.frameIndex];
+        frame.maxOpaqueDrawCount = 0;
+        frame.maxTranslucentDrawCount = 0;
+        frame.sectionCount = 0;
         this.totalQuads = 0;
         this.visibleQuads = 0;
         this.culledQuads = 0;
@@ -190,7 +207,8 @@ public class VulkanSectionRenderer {
     }
 
     public void renderOpaque(VkCommandBuffer cb, long lightmapView, long lightmapSampler, int sectionCount) {
-        if (sectionCount <= 0 || this.currentOpaqueDrawCount <= 0) return;
+        FrameData frame = this.frames[this.frameIndex];
+        if (sectionCount <= 0 || frame.maxOpaqueDrawCount <= 0) return;
 
         this.terrainPipeline.bindAndDraw(cb, false,
                 this.viewport.getUniformBuffer(),
@@ -198,21 +216,22 @@ public class VulkanSectionRenderer {
                 this.geometryData.getMetadataBuffer(),
                 this.modelStore.getModelBuffer(),
                 this.modelStore.getModelColourBuffer(),
-                this.positionScratchBuffer,
+                frame.positionScratchBuffer,
                 this.modelStore.getVkImageView(),
                 this.modelStore.getVkSampler(),
                 lightmapView,
                 lightmapSampler,
                 0, 0,
                 this.indexBuffer,
-                this.drawCallBuffer,
+                frame.drawCallBuffer,
                 0L,
-                this.currentOpaqueDrawCount
+                frame.maxOpaqueDrawCount
         );
     }
 
     public void renderTranslucent(VkCommandBuffer cb, long lightmapView, long lightmapSampler, int sectionCount) {
-        if (sectionCount <= 0 || this.currentTranslucentDrawCount <= 0) return;
+        FrameData frame = this.frames[this.frameIndex];
+        if (sectionCount <= 0 || frame.maxTranslucentDrawCount <= 0) return;
 
         this.terrainPipeline.bindAndDraw(cb, true,
                 this.viewport.getUniformBuffer(),
@@ -220,16 +239,16 @@ public class VulkanSectionRenderer {
                 this.geometryData.getMetadataBuffer(),
                 this.modelStore.getModelBuffer(),
                 this.modelStore.getModelColourBuffer(),
-                this.positionScratchBuffer,
+                frame.positionScratchBuffer,
                 this.modelStore.getVkImageView(),
                 this.modelStore.getVkSampler(),
                 lightmapView,
                 lightmapSampler,
                 0, 0,
                 this.indexBuffer,
-                this.drawCallBuffer,
+                frame.drawCallBuffer,
                 (long) OPAQUE_DRAW_COUNT * 20L,
-                this.currentTranslucentDrawCount
+                frame.maxTranslucentDrawCount
         );
     }
 
@@ -238,12 +257,11 @@ public class VulkanSectionRenderer {
         this.culler.free();
         this.viewport.free();
         this.hiZBuffer.free();
-        this.statisticsBuffer.free();
-        this.drawCallBuffer.free();
-        this.drawCountCallBuffer.free();
         this.visibilityBuffer.free();
-        this.indirectLookupBuffer.free();
-        this.positionScratchBuffer.free();
-        this.distanceCountBuffer.free();
+        for (int i = 0; i < FRAMES_IN_FLIGHT; i++) {
+            if (this.frames[i] != null) {
+                this.frames[i].free();
+            }
+        }
     }
 }

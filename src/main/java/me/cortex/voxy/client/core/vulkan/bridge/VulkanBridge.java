@@ -47,22 +47,38 @@ public final class VulkanBridge {
     private static VulkanBridge INSTANCE;
 
     private final FrontendGpuDevice frontendDevice;
+    public static final int FRAMES_IN_FLIGHT = 2;
     private final VulkanDevice vulkanDevice;
-    private long transientCommandPool;
+    private final long[] transientCommandPools = new long[FRAMES_IN_FLIGHT];
+    private final long[] transientFences = new long[FRAMES_IN_FLIGHT];
 
     private void ensureTransientCommandPool() {
-        if (this.transientCommandPool == 0) {
+        if (this.transientCommandPools[0] == 0) {
             try (MemoryStack stack = MemoryStack.stackPush()) {
                 VkCommandPoolCreateInfo poolInfo = VkCommandPoolCreateInfo.calloc(stack)
                         .sType(VK12.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO)
                         .queueFamilyIndex(this.vulkanDevice.graphicsQueue().queueFamilyIndex())
                         .flags(VK12.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
                 LongBuffer pPool = stack.callocLong(1);
-                int res = VK12.vkCreateCommandPool(this.vulkanDevice.vkDevice(), poolInfo, null, pPool);
-                if (res != VK12.VK_SUCCESS) {
-                    throw new RuntimeException("Failed to create transient VkCommandPool: " + res);
+
+                org.lwjgl.vulkan.VkFenceCreateInfo fenceInfo = org.lwjgl.vulkan.VkFenceCreateInfo.calloc(stack)
+                        .sType(VK12.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO)
+                        .flags(VK12.VK_FENCE_CREATE_SIGNALED_BIT);
+                LongBuffer pFence = stack.callocLong(1);
+
+                for (int i = 0; i < FRAMES_IN_FLIGHT; i++) {
+                    int res = VK12.vkCreateCommandPool(this.vulkanDevice.vkDevice(), poolInfo, null, pPool);
+                    if (res != VK12.VK_SUCCESS) {
+                        throw new RuntimeException("Failed to create transient VkCommandPool: " + res);
+                    }
+                    this.transientCommandPools[i] = pPool.get(0);
+
+                    res = VK12.vkCreateFence(this.vulkanDevice.vkDevice(), fenceInfo, null, pFence);
+                    if (res != VK12.VK_SUCCESS) {
+                        throw new RuntimeException("Failed to create transient VkFence: " + res);
+                    }
+                    this.transientFences[i] = pFence.get(0);
                 }
-                this.transientCommandPool = pPool.get(0);
             }
         }
     }
@@ -188,12 +204,19 @@ public final class VulkanBridge {
         return beginTransientCommandBuffer();
     }
 
-    public VkCommandBuffer beginTransientCommandBuffer() {
+    public VkCommandBuffer beginTransientCommandBuffer(int frameIndex) {
         ensureTransientCommandPool();
+        int idx = Math.floorMod(frameIndex, FRAMES_IN_FLIGHT);
+        long fence = this.transientFences[idx];
+        // Wait for fence from previous cycle of this frame index (already signaled after 1 frame)
+        VK12.vkWaitForFences(this.vulkanDevice.vkDevice(), fence, true, 1_000_000_000L);
+        VK12.vkResetFences(this.vulkanDevice.vkDevice(), fence);
+        VK12.vkResetCommandPool(this.vulkanDevice.vkDevice(), this.transientCommandPools[idx], 0);
+
         try (MemoryStack stack = MemoryStack.stackPush()) {
             VkCommandBufferAllocateInfo allocInfo = VkCommandBufferAllocateInfo.calloc(stack)
                     .sType(VK12.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO)
-                    .commandPool(this.transientCommandPool)
+                    .commandPool(this.transientCommandPools[idx])
                     .level(VK12.VK_COMMAND_BUFFER_LEVEL_PRIMARY)
                     .commandBufferCount(1);
             PointerBuffer pCb = stack.callocPointer(1);
@@ -214,19 +237,33 @@ public final class VulkanBridge {
         }
     }
 
-    public void endAndSubmitTransientCommandBuffer(VkCommandBuffer cb) {
+    public void endAndSubmitTransientCommandBuffer(VkCommandBuffer cb, int frameIndex) {
         int res = VK12.vkEndCommandBuffer(cb);
         if (res != VK12.VK_SUCCESS) {
             throw new RuntimeException("Failed to end transient VkCommandBuffer: " + res);
         }
 
-        var submission = this.vulkanDevice.graphicsQueue().beginSubmit();
-        submission.executeCommands(cb);
-        submission.close();
+        int idx = Math.floorMod(frameIndex, FRAMES_IN_FLIGHT);
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            org.lwjgl.vulkan.VkSubmitInfo2.Buffer submitInfo = org.lwjgl.vulkan.VkSubmitInfo2.calloc(1, stack).sType$Default();
+            org.lwjgl.vulkan.VkCommandBufferSubmitInfo.Buffer cbInfo = org.lwjgl.vulkan.VkCommandBufferSubmitInfo.calloc(1, stack).sType$Default();
+            cbInfo.commandBuffer(cb);
+            submitInfo.pCommandBufferInfos(cbInfo);
 
-        this.vulkanDevice.graphicsQueue().waitIdle();
+            org.lwjgl.vulkan.KHRSynchronization2.vkQueueSubmit2KHR(
+                    this.vulkanDevice.graphicsQueue().vkQueue(),
+                    submitInfo,
+                    this.transientFences[idx]
+            );
+        }
+    }
 
-        VK12.vkResetCommandPool(this.vulkanDevice.vkDevice(), this.transientCommandPool, 0);
+    public VkCommandBuffer beginTransientCommandBuffer() {
+        return beginTransientCommandBuffer(0);
+    }
+
+    public void endAndSubmitTransientCommandBuffer(VkCommandBuffer cb) {
+        endAndSubmitTransientCommandBuffer(cb, 0);
     }
 
     public VkCommandBuffer getOrCreateActiveCommandBuffer() {
@@ -321,9 +358,16 @@ public final class VulkanBridge {
     }
 
     public void destroy() {
-        if (this.transientCommandPool != 0) {
-            VK12.vkDestroyCommandPool(this.vulkanDevice.vkDevice(), this.transientCommandPool, null);
-            this.transientCommandPool = 0;
+        waitIdle();
+        for (int i = 0; i < FRAMES_IN_FLIGHT; i++) {
+            if (this.transientFences[i] != 0) {
+                VK12.vkDestroyFence(this.vulkanDevice.vkDevice(), this.transientFences[i], null);
+                this.transientFences[i] = 0;
+            }
+            if (this.transientCommandPools[i] != 0) {
+                VK12.vkDestroyCommandPool(this.vulkanDevice.vkDevice(), this.transientCommandPools[i], null);
+                this.transientCommandPools[i] = 0;
+            }
         }
     }
 }

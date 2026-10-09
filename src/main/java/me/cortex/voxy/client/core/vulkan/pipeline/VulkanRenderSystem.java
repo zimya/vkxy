@@ -227,23 +227,71 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
             this.sectionRenderer.clearDrawCalls();
         }
 
-        // Evict distant node geometry if memory is tight
-        this.tickEviction(camX, camY, camZ);
+        // Evict distant node geometry if memory is tight or stale after zoom
+        float m11 = Math.abs(activeProj.m11());
+        float zoomRatio = Math.max(1.0f, m11 / 1.37f);
+        this.tickEviction(camX, camY, camZ, zoomRatio);
     }
 
-    private void tickEviction(double camX, double camY, double camZ) {
+    private void tickEviction(double camX, double camY, double camZ, float zoomRatio) {
         this.evictionTickCounter++;
         // Check eviction every 30 frames (~0.5s)
         if (this.evictionTickCounter % 30 != 0) return;
 
-        // Evict when free geometry memory is constrained (< 256MB)
+        long[] positions = this.nodeManager.getActiveSectionPositions();
+        if (positions.length == 0) return;
+
+        FrustumIntersection frustum = this.traverser.getLastFrustum();
+
+        // 1. Stale fine-level node pruning:
+        // Evict Level 0 and Level 1 nodes that are far beyond their active LOD range (created during zoom or flight)
+        // This triggers parent node coarse meshing and collapses the octree back to a compact state!
+        LongArrayList staleList = new LongArrayList();
+        double maxLvl0Dist = Math.max(480.0 * zoomRatio, 480.0);
+        double maxLvl0DistSq = maxLvl0Dist * maxLvl0Dist;
+        double maxLvl1Dist = Math.max(960.0 * zoomRatio, 960.0);
+        double maxLvl1DistSq = maxLvl1Dist * maxLvl1Dist;
+
+        for (long pos : positions) {
+            int lvl = WorldEngine.getLevel(pos);
+            if (lvl >= 2) continue; // Keep Level 2, 3, 4 permanently for stable baseline coverage
+
+            // CRITICAL: NEVER evict nodes that are within the view frustum!
+            // Evicting in-frustum nodes causes immediate terrain holes/flickering before parent meshes build.
+            if (isInsideFrustum(frustum, pos, camX, camY, camZ)) {
+                continue;
+            }
+
+            // Use horizontal (XZ) distance to avoid falsely evicting terrain beneath high-altitude cameras (e.g. Y=500+)
+            double distSq = getHorizontalDistanceSq(pos, camX, camZ);
+            if (lvl == 0 && distSq > maxLvl0DistSq) {
+                staleList.add(pos);
+            } else if (lvl == 1 && distSq > maxLvl1DistSq) {
+                staleList.add(pos);
+            }
+        }
+
+        if (!staleList.isEmpty()) {
+            staleList.sort((a, b) -> {
+                int lvlA = WorldEngine.getLevel(a);
+                int lvlB = WorldEngine.getLevel(b);
+                if (lvlA != lvlB) return Integer.compare(lvlA, lvlB);
+                return Double.compare(getHorizontalDistanceSq(b, camX, camZ), getHorizontalDistanceSq(a, camX, camZ));
+            });
+            int evicted = 0;
+            int maxEvict = 256;
+            for (int i = 0; i < staleList.size() && evicted < maxEvict; i++) {
+                this.nodeManager.removeNodeGeometry(staleList.getLong(i));
+                evicted++;
+            }
+            if (evicted > 0) {
+                Logger.info("Vulkan LOD pruning: evicted " + evicted + " stale fine-level nodes (active: " + positions.length + ")");
+            }
+        }
+
+        // 2. Emergency eviction when free geometry memory is constrained (< 256MB)
         long freeBytes = this.geometryManager.getFreeBytes();
         if (freeBytes < 256L * 1024 * 1024) {
-            long[] positions = this.nodeManager.getActiveSectionPositions();
-            if (positions.length == 0) return;
-
-            FrustumIntersection frustum = this.traverser.getLastFrustum();
-
             // Candidate filtering: NEVER evict nodes that are within the current view frustum!
             // NEVER evict Level >= 2 nodes to preserve baseline coarse LOD coverage across all angles!
             LongArrayList candidateList = new LongArrayList();
@@ -251,26 +299,8 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
                 int lvl = WorldEngine.getLevel(pos);
                 if (lvl >= 2) continue; // Keep Level 2, 3, 4 permanently to guarantee no void holes
 
-                if (frustum != null) {
-                    double minX = (double) (WorldEngine.getX(pos) << lvl) * 32.0;
-                    double minY = (double) (WorldEngine.getY(pos) << lvl) * 32.0;
-                    double minZ = (double) (WorldEngine.getZ(pos) << lvl) * 32.0;
-                    double size = (double) (32 << lvl);
-                    double maxX = minX + size;
-                    double maxY = minY + size;
-                    double maxZ = minZ + size;
-
-                    float relMinX = (float) (minX - camX);
-                    float relMaxX = (float) (maxX - camX);
-                    float relMinY = (float) (minY - camY);
-                    float relMaxY = (float) (maxY - camY);
-                    float relMinZ = (float) (minZ - camZ);
-                    float relMaxZ = (float) (maxZ - camZ);
-
-                    // If node intersects the current view frustum, PROTECT IT!
-                    if (frustum.testAab(relMinX, relMinY, relMinZ, relMaxX, relMaxY, relMaxZ)) {
-                        continue;
-                    }
+                if (isInsideFrustum(frustum, pos, camX, camY, camZ)) {
+                    continue;
                 }
 
                 candidateList.add(pos);
@@ -285,8 +315,8 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
                 if (lvlA != lvlB) {
                     return Integer.compare(lvlA, lvlB); // Lower level evicted first
                 }
-                double distA = getDistanceSq(a, camX, camY, camZ);
-                double distB = getDistanceSq(b, camX, camY, camZ);
+                double distA = getHorizontalDistanceSq(a, camX, camZ);
+                double distB = getHorizontalDistanceSq(b, camX, camZ);
                 return Double.compare(distB, distA);
             });
 
@@ -307,15 +337,43 @@ public class VulkanRenderSystem implements IVoxyRenderSystem {
         }
     }
 
-    private static double getDistanceSq(long pos, double camX, double camY, double camZ) {
+    private static boolean isInsideFrustum(FrustumIntersection frustum, long pos, double camX, double camY, double camZ) {
+        int lvl = WorldEngine.getLevel(pos);
+        double minX = (double) (WorldEngine.getX(pos) << lvl) * 32.0;
+        double minY = (double) (WorldEngine.getY(pos) << lvl) * 32.0;
+        double minZ = (double) (WorldEngine.getZ(pos) << lvl) * 32.0;
+        double size = (double) (32 << lvl);
+        double maxX = minX + size;
+        double maxY = minY + size;
+        double maxZ = minZ + size;
+
+        // If camera is near or inside the node bounding box, protect it
+        double dx = Math.max(0.0, Math.max(minX - camX, camX - maxX));
+        double dy = Math.max(0.0, Math.max(minY - camY, camY - maxY));
+        double dz = Math.max(0.0, Math.max(minZ - camZ, camZ - maxZ));
+        if (dx * dx + dy * dy + dz * dz < size * size * 2.0) {
+            return true;
+        }
+
+        if (frustum == null) return true;
+
+        float relMinX = (float) (minX - camX);
+        float relMaxX = (float) (maxX - camX);
+        float relMinY = (float) (minY - camY);
+        float relMaxY = (float) (maxY - camY);
+        float relMinZ = (float) (minZ - camZ);
+        float relMaxZ = (float) (maxZ - camZ);
+
+        return frustum.testAab(relMinX, relMinY, relMinZ, relMaxX, relMaxY, relMaxZ);
+    }
+
+    private static double getHorizontalDistanceSq(long pos, double camX, double camZ) {
         int lvl = WorldEngine.getLevel(pos);
         double x = (double) ((WorldEngine.getX(pos) << lvl) * 32 + (16 << lvl));
-        double y = (double) ((WorldEngine.getY(pos) << lvl) * 32 + (16 << lvl));
         double z = (double) ((WorldEngine.getZ(pos) << lvl) * 32 + (16 << lvl));
         double dx = x - camX;
-        double dy = y - camY;
         double dz = z - camZ;
-        return dx * dx + dy * dy + dz * dz;
+        return dx * dx + dz * dz;
     }
 
     @Override
